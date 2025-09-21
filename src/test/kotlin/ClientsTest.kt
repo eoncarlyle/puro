@@ -15,21 +15,21 @@ class ClientsTest {
 
     @Test
     fun `Transition to 2 bit VLQ`() {
-        val expected = byteArrayOf(0, 1)
-        val actual = 128L.toVlq()
+        val expected = byteArrayOf(0x80.toByte(), 0x1.toByte())
+        val actual = (128L).toVlq()
         assert(equivalent(actual, expected))
     }
 
     @Test
     fun `Saturated 2 bit VLQ`() {
-        val expected = byteArrayOf(0x7F, 0x7F)
+        val expected = byteArrayOf(0xFF.toByte(), 0x7F)
         val actual = 16383L.toVlq()
         assert(equivalent(actual, expected))
     }
 
     @Test
     fun `Transition to 3 bit VLQ`() {
-        val expected = byteArrayOf(0, 0, 1)
+        val expected = byteArrayOf(0x80.toByte(), 0x80.toByte(), 0x1)
         val actual = 16384L.toVlq()
         assert(equivalent(actual, expected))
     }
