@@ -14,6 +14,7 @@ Rather than any daemonised processed, there will just be a log format and client
 - If I am at all interested in segment rollover, it makes more sense to operate on the level of directories
 - Alerting reader clients of segment turnover will be best accomplished by a special control message
 - Going multi-file is kinda breaking the 'one file' idea in 'Kafka in One File', but, hey, even SQLite has WAL files
+  - Recording most recent offsets of messages across topics in another file may be nice
 
 ### Stream Format
 Header: fixed size to indicate if active segment?
