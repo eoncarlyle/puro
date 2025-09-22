@@ -1,8 +1,9 @@
+import com.iainschmitt.maxVlqLong
 import com.iainschmitt.toVlq
 import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 
-class ClientsTest {
+class VlqTest {
 
     private fun equivalent(byteBuffer: ByteBuffer, byteArray: ByteArray) = byteBuffer.array().contentEquals(byteArray)
 
@@ -34,4 +35,17 @@ class ClientsTest {
         assert(equivalent(actual, expected))
     }
 
+    @Test
+    fun `Maximum value`() {
+        val expected = byteArrayOf(-1, -1, -1, -1, -1, -1, -1, 127)
+        val actual = maxVlqLong.toVlq()
+        assert(equivalent(actual, expected))
+    }
+
+    @Test
+    fun `Overflow value`() {
+        val expected = byteArrayOf()
+        val actual = (maxVlqLong+1).toVlq()
+        assert(equivalent(actual, expected))
+    }
 }
