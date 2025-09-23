@@ -43,7 +43,8 @@ fun Long.toVlq(): ByteBuffer {
         finalBuffer.put((0x80 + this.get7Bit(i)).toByte())
     }
     finalBuffer.put(this.get7Bit(bytesReq - 1))
-    return finalBuffer
+    // The max VLQ size shows that there are limits to how large these buffers can get: could they be pooled?
+		return finalBuffer
 }
 
 // TODO
