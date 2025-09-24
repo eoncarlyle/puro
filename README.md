@@ -25,13 +25,16 @@ Header: fixed size to indicate if active segment?
 Message Format
 ```text
 crc: uint8
+totalLength: varlong
 topicLength: varlong
 topic: byte[]
 keyLength: varlong
 key: byte[]
-valueLength: varlong
 value: byte[]
 ```
+
+The CRC covers the entire rest of the message. Message length computed from total, topic, and key lengths.
+I am not super confident in the 'what happens if the write is incomplete' which makes me think that an index in the directory makes sense
 
 Message Limits
 - Topic, key no more than 1 kilobytes

@@ -65,14 +65,17 @@ class PuroProducer(
     }
 
     fun send(topic: String, key: ByteBuffer, value: ByteBuffer): Unit {
-        // Assuming is on active segment
+        // Assuming on active segment at this point
+
+        // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
+
         FileChannel.open(streamFilePath, StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()
             var lock: FileLock?
             do {
                 lock = channel.tryLock(fileSize, Long.MAX_VALUE - fileSize, false)
                 if (lock == null) {
-                    Thread.sleep(retryDelay)
+                    Thread.sleep(retryDelay) // Should eventually give up
                 }
             } while (lock == null)
         }
