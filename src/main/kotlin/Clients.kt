@@ -1,6 +1,8 @@
 package com.iainschmitt
 
+import crc8
 import toVlqEncoding
+import updateCrc8
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -22,6 +24,21 @@ fun ByteBuffer.crc8(): ByteBuffer {
     return ByteBuffer.allocate(0)
 }
 
+fun getMessageCrc(
+    encodedTotalLength: ByteBuffer,
+    encodedTopicLength: ByteBuffer,
+    encodedTopic: ByteArray,
+    encodedKeyLength: ByteBuffer,
+    key: ByteBuffer,
+    value: ByteBuffer,
+): Byte =
+    crc8(encodedTotalLength) //TODO get on same page about using buffers here - concerned of `ByteBuffer#array` cost
+        .updateCrc8(encodedTopicLength)
+        .updateCrc8(encodedTopic)
+        .updateCrc8(encodedKeyLength)
+        .updateCrc8(key)
+        .updateCrc8(value)
+
 class PuroProducer(
     streamFileName: String,
 ) {
@@ -39,7 +56,8 @@ class PuroProducer(
 
         // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
 
-        val topicLength = topic.toByteArray().size
+        val encodedTopic = topic.encodeToByteArray()
+        val topicLength = encodedTopic.size
         val encodedTopicLength = topicLength.toVlqEncoding()
         // This maybe should change - this will only work if the byte buffers are at capacity
         val keyLength = key.capacity()
@@ -58,7 +76,14 @@ class PuroProducer(
         // But I don't want to call `crc8` because that requires a whole byte buffer
         // I'm 90% sure this isn't an issue at all because the crcs can be incrementally update
         // as is shown in updateCrc8 - will revisit tomorrow
-
+        val messageCrc = getMessageCrc(
+            encodedTotalLength = encodedTotalLength,
+            encodedTopicLength = encodedTopicLength,
+            encodedTopic = encodedTopic,
+            encodedKeyLength = encodedKeyLength,
+            key = key,
+            value = value
+        )
 
         FileChannel.open(streamFilePath, StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()

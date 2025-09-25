@@ -1,3 +1,5 @@
+import java.nio.ByteBuffer
+
 // Directly converted from Lammert Bies's Libcrc
 val sht75CrcTable = byteArrayOf(
     0, 49, 98, 83, -60, -11, -90, -105, -71, -120, -37, -22, 125, 76, 31, 46,
@@ -26,6 +28,17 @@ fun crc8(inputStr: ByteArray): Byte {
     return crc
 }
 
+fun crc8(inputStr: ByteBuffer): Byte = crc8(inputStr.array())
+
 fun updateCrc8(crc: Byte, value: Byte): Byte {
     return sht75CrcTable[(value.toInt() xor crc.toInt()) and 0xFF]
+}
+
+fun Byte.updateCrc8(value: ByteArray): Byte {
+    return updateCrc8(this, crc8(value))
+}
+
+// Refactor don't duplicated
+fun Byte.updateCrc8(value: ByteBuffer): Byte {
+    return updateCrc8(this, crc8(value.array()))
 }

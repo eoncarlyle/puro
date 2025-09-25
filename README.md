@@ -38,4 +38,18 @@ I am not super confident in the 'what happens if the write is incomplete' which 
 
 Message Limits
 - Topic, key no more than 1 kilobytes
-- Value no more than 10 megabytes
+- Value no more than 10 megabyte
+
+## Experimentation
+
+### Producer
+Everything that I have heard about performance-aware Java is that aggressive benchmark evaluation is really important.
+As 'forks in the road' come up performance wise, it would be good to evaluate the following
+- VLQ vs. long encoding
+- Aggressive nulling out of allocated objects vs. leaving the garbage collector to do so
+- Running Tail recursive IO monad vs. not
+- Arena allocation vs. not
+- Object pools vs. not
+
+These are already a dizzying number of configurations, but with four options cobbling together the functions for each shouldn't be a huge pain.
+Keep in mind that GC impacting options may matter more for message latency than message throughput.
