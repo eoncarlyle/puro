@@ -1,13 +1,12 @@
 package com.iainschmitt
 
+import toVlqEncoding
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.file.FileSystem
 import java.nio.file.FileSystems
 import java.nio.file.StandardOpenOption
-import kotlin.math.max
-import kotlin.math.pow
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
@@ -18,37 +17,8 @@ class Record<K, V>(
     val value: V
 )
 
-fun ceilingDivision(dividend: Int, divisor: Int): Int = (dividend + divisor - 1) / divisor
-fun Long.get7Bit(index: Int): Byte = (this shr (index * 7) and 0x7F).toByte()
-fun Long.last7Bit(): Byte = (this and 0x7F).toByte()
-
-// 64 bits * (7/8) - 57 bits
-const val maxVlqLong = (1L shl 56) - 1
-
-// https://en.wikipedia.org/wiki/Variable-length_quantity
-fun Long.toVlq(): ByteBuffer {
-    if (this > maxVlqLong) {
-        // !! Possibly should return a better/different type here
-        return ByteBuffer.allocate(0)
-    }
-    val bitsReq = Long.SIZE_BITS - this.countLeadingZeroBits()
-    val bytesReq = ceilingDivision(bitsReq, 7)
-    if (bytesReq == 1) {
-        ByteBuffer.allocate(1).put(this.last7Bit())
-    }
-    val finalBuffer = ByteBuffer.allocate(bytesReq)
-    //'Little-endian byte order allows us to support arbitrary lengths more easily' from Kafka source
-    for (i in 0..<bytesReq - 1) {
-        // 0x80: continuation bit
-        finalBuffer.put((0x80 + this.get7Bit(i)).toByte())
-    }
-    finalBuffer.put(this.get7Bit(bytesReq - 1))
-    // The max VLQ size shows that there are limits to how large these buffers can get: could they be pooled?
-		return finalBuffer
-}
-
 // TODO
-fun ByteBuffer.crc8(): ByteBuffer  {
+fun ByteBuffer.crc8(): ByteBuffer {
     return ByteBuffer.allocate(0)
 }
 
@@ -68,6 +38,27 @@ class PuroProducer(
         // Assuming on active segment at this point
 
         // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
+
+        val topicLength = topic.toByteArray().size
+        val encodedTopicLength = topicLength.toVlqEncoding()
+        // This maybe should change - this will only work if the byte buffers are at capacity
+        val keyLength = key.capacity()
+        val encodedKeyLength = keyLength.toVlqEncoding()
+        val valueLength = value.capacity()
+
+        val totalLength =
+            encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+        val encodedTotalLength = totalLength.toVlqEncoding()
+
+        // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
+        val messageBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + totalLength)
+
+        //* TODO pick up here
+        // I want to compute the CRC for everything after the CRC
+        // But I don't want to call `crc8` because that requires a whole byte buffer
+        // I'm 90% sure this isn't an issue at all because the crcs can be incrementally update
+        // as is shown in updateCrc8 - will revisit tomorrow
+
 
         FileChannel.open(streamFilePath, StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()
