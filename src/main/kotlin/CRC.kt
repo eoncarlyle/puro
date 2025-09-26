@@ -1,4 +1,5 @@
 import java.nio.ByteBuffer
+import kotlin.experimental.xor
 
 // Directly converted from Lammert Bies's Libcrc
 val sht75CrcTable = byteArrayOf(
@@ -28,7 +29,17 @@ fun crc8(inputStr: ByteArray): Byte {
     return crc
 }
 
-fun crc8(inputStr: ByteBuffer): Byte = crc8(inputStr.array())
+fun crc8(buffer: ByteBuffer): Byte {
+    var crc: Byte = 0x00
+
+    buffer.rewind()
+
+    repeat (buffer.remaining()) {
+        crc = sht75CrcTable[(buffer.get() xor crc).toInt() and 0xFF]
+    }
+    return crc
+}
+
 
 fun updateCrc8(crc: Byte, value: Byte): Byte {
     return sht75CrcTable[(value.toInt() xor crc.toInt()) and 0xFF]
@@ -38,7 +49,6 @@ fun Byte.updateCrc8(value: ByteArray): Byte {
     return updateCrc8(this, crc8(value))
 }
 
-// Refactor don't duplicated
-fun Byte.updateCrc8(value: ByteBuffer): Byte {
-    return updateCrc8(this, crc8(value.array()))
+fun Byte.updateCrc8(buffer: ByteBuffer): Byte {
+    return updateCrc8(this, crc8(buffer))
 }

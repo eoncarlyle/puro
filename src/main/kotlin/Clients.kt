@@ -1,6 +1,8 @@
 package com.iainschmitt
 
 import crc8
+import defensiveReset
+import jdk.internal.joptsimple.internal.Messages.message
 import toVlqEncoding
 import updateCrc8
 import java.nio.ByteBuffer
@@ -19,9 +21,55 @@ class Record<K, V>(
     val value: V
 )
 
-// TODO
-fun ByteBuffer.crc8(): ByteBuffer {
-    return ByteBuffer.allocate(0)
+fun createRecordBuffer(topic: String, key: ByteBuffer, value: ByteBuffer): ByteBuffer {
+    key.rewind()
+    value.rewind()
+
+    // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
+    val encodedTopic = topic.encodeToByteArray()
+    val topicLength = encodedTopic.size
+    val encodedTopicLength = topicLength.toVlqEncoding()
+    val keyLength = key.capacity()
+    val encodedKeyLength = keyLength.toVlqEncoding()
+    val valueLength = value.capacity()
+
+    val totalLength =
+        encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+    val encodedTotalLength = totalLength.toVlqEncoding()
+
+    // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
+    val recordBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + totalLength)
+
+    val messageCrc = getMessageCrc(
+        encodedTotalLength = encodedTotalLength,
+        encodedTopicLength = encodedTopicLength,
+        encodedTopic = encodedTopic,
+        encodedKeyLength = encodedKeyLength,
+        key = key,
+        value = value
+    )
+
+    recordBuffer.put(messageCrc).put(encodedTotalLength.rewind()).put(encodedTopicLength.rewind()).put(encodedTopic)
+        .put(encodedKeyLength.rewind()).put(key.rewind()).put(value.rewind())
+
+//    var m: ArrayList<Byte> = ArrayList()
+//    m.add(messageCrc)
+//    encodedTotalLength.array().forEach { m.add(it) }
+//    encodedTopicLength.array().forEach { m.add(it) }
+//    encodedTopic.forEach { m.add(it) }
+//    encodedKeyLength.array().forEach { m.add(it) }
+//    key.array().forEach { m.add(it) }
+//    value.array().forEach { m.add(it) }
+//     recordBuffer.rewind()
+//    val recordArray = ByteArray(recordBuffer.remaining())
+//    recordBuffer.get(recordArray)
+//    recordBuffer.rewind()
+//    val mArray = m.toByteArray()
+//    println("Record: ${recordArray.contentToString()}")
+//    println("M:      ${mArray.contentToString()}")
+//    println("Equal:  ${recordArray.contentEquals(mArray)}")
+
+    return recordBuffer.rewind()
 }
 
 fun getMessageCrc(
@@ -51,40 +99,10 @@ class PuroProducer(
         val retryDelay = 10.milliseconds.toJavaDuration()
     }
 
-    fun send(topic: String, key: ByteBuffer, value: ByteBuffer): Unit {
+    fun send(topic: String, key: ByteBuffer, value: ByteBuffer) {
         // Assuming on active segment at this point
 
-        // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
-
-        val encodedTopic = topic.encodeToByteArray()
-        val topicLength = encodedTopic.size
-        val encodedTopicLength = topicLength.toVlqEncoding()
-        // This maybe should change - this will only work if the byte buffers are at capacity
-        val keyLength = key.capacity()
-        val encodedKeyLength = keyLength.toVlqEncoding()
-        val valueLength = value.capacity()
-
-        val totalLength =
-            encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-        val encodedTotalLength = totalLength.toVlqEncoding()
-
-        // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-        val messageBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + totalLength)
-
-        //* TODO pick up here
-        // I want to compute the CRC for everything after the CRC
-        // But I don't want to call `crc8` because that requires a whole byte buffer
-        // I'm 90% sure this isn't an issue at all because the crcs can be incrementally update
-        // as is shown in updateCrc8 - will revisit tomorrow
-        val messageCrc = getMessageCrc(
-            encodedTotalLength = encodedTotalLength,
-            encodedTopicLength = encodedTopicLength,
-            encodedTopic = encodedTopic,
-            encodedKeyLength = encodedKeyLength,
-            key = key,
-            value = value
-        )
-
+        val recordBuffer = createRecordBuffer(topic, key, value)
         FileChannel.open(streamFilePath, StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()
             var lock: FileLock?
@@ -94,6 +112,7 @@ class PuroProducer(
                     Thread.sleep(retryDelay) // Should eventually give up
                 }
             } while (lock == null)
+            channel.write(recordBuffer)
         }
     }
 }

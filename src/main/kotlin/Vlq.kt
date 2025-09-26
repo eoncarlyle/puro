@@ -15,8 +15,8 @@ fun Int.toVlqEncoding(): ByteBuffer {
     }
     val bitsReq = Int.SIZE_BITS - this.countLeadingZeroBits()
     val bytesReq = ceilingDivision(bitsReq, 7)
-    if (bytesReq == 1) {
-        ByteBuffer.allocate(1).put(this.last7Bit())
+    if (bytesReq <= 1) {
+        return ByteBuffer.allocate(1).put(this.last7Bit())
     }
     val finalBuffer = ByteBuffer.allocate(bytesReq)
     //'Little-endian byte order allows us to support arbitrary lengths more easily' from Kafka source
@@ -26,5 +26,5 @@ fun Int.toVlqEncoding(): ByteBuffer {
     }
     finalBuffer.put(this.get7Bit(bytesReq - 1))
     // The max VLQ size shows that there are limits to how large these buffers can get: could they be pooled?
-    return finalBuffer
+    return finalBuffer.rewind()
 }

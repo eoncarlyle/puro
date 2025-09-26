@@ -45,6 +45,7 @@ Message Limits
 ### Producer
 Everything that I have heard about performance-aware Java is that aggressive benchmark evaluation is really important.
 As 'forks in the road' come up performance wise, it would be good to evaluate the following
+- Byte buffers or byte arrays (length will matter)
 - VLQ vs. long encoding
 - Aggressive nulling out of allocated objects vs. leaving the garbage collector to do so
 - Running Tail recursive IO monad vs. not
