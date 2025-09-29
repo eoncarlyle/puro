@@ -7,6 +7,12 @@ This is probably wildly ambitious but this is an attempt to make an 'SQLite of e
 The idea is an alternative to running Apache Kafka when producers and consumers are not separated by a network.
 Rather than any daemonised processed, there will just be a log format and client libraries for producers and consumers.
 
+## Development Log
+
+### 2025-09-28
+`ConsumerTest#Happy Path getRecord` has a different crc8 for the encoded total length on serialisation and deserialisation.
+This is not because they differ on VLQ - there is some subtle difference between immediate and incremental calculation of CRC8s.
+
 ## Implementation
 
 ### Storage

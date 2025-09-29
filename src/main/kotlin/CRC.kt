@@ -21,10 +21,12 @@ val sht75CrcTable = byteArrayOf(
     -126, -77, -32, -47, 70, 119, 36, 21, 59, 10, 89, 104, -1, -50, -99, -84
 )
 
+fun crc8(byte: Byte): Byte = sht75CrcTable[(byte xor 0x00.toByte()).toInt() and 0xFF]
+
 fun crc8(inputStr: ByteArray): Byte {
     var crc: Byte = 0x00
     for (byte in inputStr) {
-        crc = sht75CrcTable[(byte.toInt() xor crc.toInt()) and 0xFF]
+        crc = sht75CrcTable[(byte xor crc).toInt() and 0xFF]
     }
     return crc
 }
@@ -41,14 +43,18 @@ fun crc8(buffer: ByteBuffer): Byte {
 }
 
 
-fun updateCrc8(crc: Byte, value: Byte): Byte {
-    return sht75CrcTable[(value.toInt() xor crc.toInt()) and 0xFF]
-}
+fun updateCrc8(crc: Byte, value: Byte): Byte = sht75CrcTable[(value.toInt() xor crc.toInt()) and 0xFF]
 
-fun Byte.updateCrc8(value: ByteArray): Byte {
-    return updateCrc8(this, crc8(value))
-}
+fun Byte.withCrc8(value: ByteArray): Byte = updateCrc8(this, crc8(value))
 
-fun Byte.updateCrc8(buffer: ByteBuffer): Byte {
-    return updateCrc8(this, crc8(buffer))
+fun Byte.withCrc8(buffer: ByteBuffer): Byte = updateCrc8(this, crc8(buffer))
+
+fun Byte.withCrc8(value: Byte): Byte = updateCrc8(this, crc8(value))
+
+fun updateCrc8List(value: Byte, vararg bytes: Byte): Byte {
+    var crc8 = value
+    for (b in bytes) {
+        crc8 = crc8.withCrc8(b)
+    }
+    return crc8
 }

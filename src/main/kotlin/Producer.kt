@@ -1,10 +1,8 @@
 package com.iainschmitt
 
 import crc8
-import defensiveReset
-import jdk.internal.joptsimple.internal.Messages.message
 import toVlqEncoding
-import updateCrc8
+import withCrc8
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -15,13 +13,14 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
 // Will need version,
-class Record<K, V>(
+data class PuroRecord(
     val topic: String,
-    val key: K,
-    val value: V
+    val key: ByteBuffer,
+    val value: ByteBuffer,
 )
 
-fun createRecordBuffer(topic: String, key: ByteBuffer, value: ByteBuffer): ByteBuffer {
+fun createRecordBuffer(record: PuroRecord): ByteBuffer {
+    val (topic, key, value) = record
     key.rewind()
     value.rewind()
 
@@ -52,6 +51,7 @@ fun createRecordBuffer(topic: String, key: ByteBuffer, value: ByteBuffer): ByteB
     recordBuffer.put(messageCrc).put(encodedTotalLength.rewind()).put(encodedTopicLength.rewind()).put(encodedTopic)
         .put(encodedKeyLength.rewind()).put(key.rewind()).put(value.rewind())
 
+
 //    var m: ArrayList<Byte> = ArrayList()
 //    m.add(messageCrc)
 //    encodedTotalLength.array().forEach { m.add(it) }
@@ -79,13 +79,12 @@ fun getMessageCrc(
     encodedKeyLength: ByteBuffer,
     key: ByteBuffer,
     value: ByteBuffer,
-): Byte =
-    crc8(encodedTotalLength) //TODO get on same page about using buffers here - concerned of `ByteBuffer#array` cost
-        .updateCrc8(encodedTopicLength)
-        .updateCrc8(encodedTopic)
-        .updateCrc8(encodedKeyLength)
-        .updateCrc8(key)
-        .updateCrc8(value)
+): Byte = crc8(encodedTotalLength) //TODO get on same page about using buffers here - concerned of `ByteBuffer#array` cost
+        .withCrc8(encodedTopicLength)
+        .withCrc8(encodedTopic)
+        .withCrc8(encodedKeyLength)
+        .withCrc8(key)
+        .withCrc8(value)
 
 class PuroProducer(
     streamFileName: String,
@@ -99,10 +98,10 @@ class PuroProducer(
         val retryDelay = 10.milliseconds.toJavaDuration()
     }
 
-    fun send(topic: String, key: ByteBuffer, value: ByteBuffer) {
+    fun send(puroRecord: PuroRecord) {
         // Assuming on active segment at this point
 
-        val recordBuffer = createRecordBuffer(topic, key, value)
+        val recordBuffer = createRecordBuffer(puroRecord)
         FileChannel.open(streamFilePath, StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()
             var lock: FileLock?

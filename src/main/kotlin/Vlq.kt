@@ -1,4 +1,5 @@
 import java.nio.ByteBuffer
+import kotlin.experimental.and
 
 fun ceilingDivision(dividend: Int, divisor: Int): Int = (dividend + divisor - 1) / divisor
 fun Int.get7Bit(index: Int): Byte = (this shr (index * 7) and 0x7F).toByte()
@@ -27,4 +28,36 @@ fun Int.toVlqEncoding(): ByteBuffer {
     finalBuffer.put(this.get7Bit(bytesReq - 1))
     // The max VLQ size shows that there are limits to how large these buffers can get: could they be pooled?
     return finalBuffer.rewind()
+}
+
+//! ByteBuffer state modification
+fun ByteBuffer.fromVlq(): Triple<Int, Int, Byte> {
+    var currentByte = this.get()
+    var crc8 = crc8(currentByte)
+    var result = (currentByte and 0x7F).toInt()
+    var bitCount = 1
+
+    while ((currentByte and 0x80.toByte()) == 0x80.toByte()) {
+        currentByte = this.get()
+        result += ((currentByte and 0x7F).toInt() shl (bitCount * 7))
+        crc8 = crc8.withCrc8(currentByte)
+        bitCount++
+    }
+
+    return Triple(result, bitCount, crc8)
+}
+
+//! ByteBuffer state modification
+fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
+    val array = ByteArray(length)
+    this.get(array, 0, array.size)
+    return String(array) to crc8(array)
+}
+
+//! ByteBuffer state modification
+fun ByteBuffer.getSubsequence(length: Int): Pair<ByteBuffer, Byte> {
+    val array = ByteArray(length)
+    this.get(array, 0, array.size)
+    // Be wary of this wrap - may be costly
+    return ByteBuffer.wrap(array) to crc8(array)
 }
