@@ -9,6 +9,13 @@ Rather than any daemonised processed, there will just be a log format and client
 
 ## Development Log
 
+### 2025-09-29
+The incremental CRC calculations were introducing the zero calculation twice.
+There are a couple of places where I am returning an empty result or null when something invalid happens.
+Result types should be used instead, but probably not the full Arrow result type just for dependency management reasons.
+It wouldn't even be that bad of an idea to provide an extension function in another Gradle module that could do translation,
+but at this point I should read some ways that F#/Rust/Haskell libraries design result types for operations like these
+
 ### 2025-09-28
 `ConsumerTest#Happy Path getRecord` has a different crc8 for the encoded total length on serialisation and deserialisation.
 This is not because they differ on VLQ - there is some subtle difference between immediate and incremental calculation of CRC8s.

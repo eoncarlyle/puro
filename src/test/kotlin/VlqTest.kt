@@ -51,7 +51,7 @@ class VlqTest {
         val expected = 127
         val buffer = ByteBuffer.wrap(byteArrayOf(0x7F))
         val actual = buffer.fromVlq()
-        assertEquals(expected, actual.second)
+        assertEquals(expected, actual.first)
 
         assertEquals(0, buffer.remaining())
     }
@@ -61,7 +61,7 @@ class VlqTest {
         val expected = 128
         val buffer = ByteBuffer.wrap(byteArrayOf(0x80.toByte(), 0x1.toByte()))
         val actual = buffer.fromVlq()
-        assertEquals(expected, actual.second)
+        assertEquals(expected, actual.first)
         assertEquals(0, buffer.remaining())
     }
 
@@ -70,7 +70,7 @@ class VlqTest {
         val expected = 16383
         val buffer = ByteBuffer.wrap(byteArrayOf(0xFF.toByte(), 0x7F))
         val actual = buffer.fromVlq()
-        assertEquals(expected, actual.second)
+        assertEquals(expected, actual.first)
         assertEquals(0, buffer.remaining())
     }
 
@@ -79,7 +79,7 @@ class VlqTest {
         val expected = 16384
         val buffer = ByteBuffer.wrap(byteArrayOf(0x80.toByte(), 0x80.toByte(), 0x1))
         val actual = buffer.fromVlq()
-        assertEquals(expected, actual.second)
+        assertEquals(expected, actual.first)
         assertEquals(0, buffer.remaining())
     }
 
@@ -88,7 +88,7 @@ class VlqTest {
         val expected = maxVlqInt
         val buffer = ByteBuffer.wrap(byteArrayOf(-1, -1, -1, 127))
         val actual = buffer.fromVlq()
-        assertEquals(expected, actual.second)
+        assertEquals(expected, actual.first)
         assertEquals(0, buffer.remaining())
     }
 }

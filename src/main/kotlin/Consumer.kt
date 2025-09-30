@@ -12,5 +12,7 @@ fun getRecord(byteBuffer: ByteBuffer): PuroRecord? {
 
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
-    return PuroRecord(topic, key, value)
+    return if (expectedCrc == actualCrc) {
+        PuroRecord(topic, key, value)
+    } else null
 }

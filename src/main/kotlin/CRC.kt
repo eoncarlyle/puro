@@ -49,7 +49,7 @@ fun Byte.withCrc8(value: ByteArray): Byte = updateCrc8(this, crc8(value))
 
 fun Byte.withCrc8(buffer: ByteBuffer): Byte = updateCrc8(this, crc8(buffer))
 
-fun Byte.withCrc8(value: Byte): Byte = updateCrc8(this, crc8(value))
+fun Byte.withCrc8(value: Byte): Byte = updateCrc8(this, value)
 
 fun updateCrc8List(value: Byte, vararg bytes: Byte): Byte {
     var crc8 = value
