@@ -3,11 +3,42 @@
 > **Puro** (Finnish): stream, streamlet, brook, creek (body of running water smaller than a river)
 
 ## Motivation
-This is probably wildly ambitious but this is an attempt to make an 'SQLite of event streams'. 
-The idea is an alternative to running Apache Kafka when producers and consumers are not separated by a network.
-Rather than any daemonised processed, there will just be a log format and client libraries for producers and consumers.
+This is probably wildly ambitious but this is an attempt to make an 'SQLite of event streams'. This is an alternative to 
+running Apache Kafka when producers and consumers are not separated by a network.  Rather than any daemonised processed, 
+there will just be a log format and client libraries for producers and consumers.
 
 ## Development Log
+
+### 2025-10-01
+The following is dog-slow on MacOS because NIO polls rather than working with native filesystem notifications on Linux
+or Win32.
+```kotlin
+var fs = FileSystems.getDefault()
+var watchService = fs.newWatchService()
+var watchPath = fs.getPath("/tmp")
+watchPath.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY)
+
+while (true) {
+    val key = watchService.take()
+    val watchEvents = key.pollEvents()
+    watchEvents.forEach { event ->
+        val pathEvent = event as WatchEvent<Path>
+        val path = pathEvent.context()
+        println("${pathEvent.kind()} on path $path")
+    }
+    key.reset()
+}
+```
+[Directory Watcher](https://github.com/gmethvin/directory-watcher/tree/main) seems to be the way forward.
+
+At this point I am pretty sure the way to work around single-file sizes is multiple segments in a directory. This is a 
+true 'broker' level configuration, so it shouldn't be configurable by the clients. I also don't really want this to be
+dependent on a configuration file if at all possible. It would be nicer to place all settings onto a special stream, but
+I don't see much of a reason to worry about this yet. Both for segment deletion and for log compaction the best path 
+forward may be to have a third type of actor in the system that is neither consumer nor producer, and acquires locks as
+they are available to delete old segments and compact unused logs. This 'steward' would need to be configured, but if
+someone decides to have two different stewards with different compaction and deletion standards that's kind of their
+problem.
 
 ### 2025-09-29
 The incremental CRC calculations were introducing the zero calculation twice.
