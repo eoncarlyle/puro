@@ -1,17 +1,17 @@
-package com.iainschmitt
-
-import crc8
-import toVlqEncoding
-import withCrc8
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.file.FileSystem
 import java.nio.file.FileSystems
+import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.math.max
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
+import kotlin.io.path.name
+import kotlin.io.path.exists
+import kotlin.math.min
 
 // Will need version,
 data class PuroRecord(
@@ -22,8 +22,7 @@ data class PuroRecord(
 
 fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val (topic, key, value) = record
-    key.rewind()
-    value.rewind()
+    rewindAll(key, value)
 
     // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
     val encodedTopic = topic.encodeToByteArray()
@@ -48,11 +47,12 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
         key = key,
         value = value
     )
+    rewindAll(encodedTotalLength, encodedTopicLength, encodedKeyLength, key, value)
 
-    recordBuffer.put(messageCrc).put(encodedTotalLength.rewind()).put(encodedTopicLength.rewind()).put(encodedTopic)
-        .put(encodedKeyLength.rewind()).put(key.rewind()).put(value.rewind())
+    recordBuffer.put(messageCrc).put(encodedTotalLength).put(encodedTopicLength).put(encodedTopic)
+        .put(encodedKeyLength).put(key).put(value)
 
-
+    return recordBuffer.rewind()
 //    var m: ArrayList<Byte> = ArrayList()
 //    m.add(messageCrc)
 //    encodedTotalLength.array().forEach { m.add(it) }
@@ -69,8 +69,6 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
 //    println("Record: ${recordArray.contentToString()}")
 //    println("M:      ${mArray.contentToString()}")
 //    println("Equal:  ${recordArray.contentEquals(mArray)}")
-
-    return recordBuffer.rewind()
 }
 
 fun getMessageCrc(
@@ -88,20 +86,38 @@ fun getMessageCrc(
         .withCrc8(key)
         .withCrc8(value)
 
-// Batch total is the number of messages to be sent before reliquishing the lock
+//  is the number of messages to be sent before reliquishing the lock
 // This should have a maximum value to prevent starvation
-// Probably better to return null/failing result instead of bad
+// Probably better to return null/failing result for misconfiguration
 class PuroProducer(
-    streamDirectory: String,
-    val batchTotal: Int,
+    val streamDirectory: String,
+    val maximumWriteBatchSize: Int,
 ) {
     // Currently assuming is on active segment
     private val fileSystem: FileSystem = FileSystems.getDefault()
-    private val streamFilePath = fileSystem.getPath(streamDirectory)
 
+    // Subject to change with rotation
     companion object {
         // This should be configurable
         val retryDelay = 10.milliseconds.toJavaDuration()
+    }
+
+    fun extractSegmentName(path: Path) = path.fileName.toString().substringAfter("stream").substringBefore(".puro").toIntOrNull() ?: -1
+    val compareBySegmentName =  Comparator<Path> { p1, p2 -> extractSegmentName(p1) - extractSegmentName(p2) }
+
+    fun getActiveSegment(): Path {
+        val streamDir = fileSystem.getPath(streamDirectory)
+        Files.createDirectories(streamDir)
+
+        val topFoundSegment = Files.list(streamDir).use { stream ->
+            stream.filter { it.fileName.toString().matches(Regex("""stream\d+\.puro""")) }.max(compareBySegmentName)
+        }
+
+        return if (topFoundSegment.isPresent) {
+            topFoundSegment.get()
+        } else {
+            streamDir.resolve("stream0.puro").also { Files.createFile(it) }
+        }
     }
 
     // TODO actually test this
@@ -112,22 +128,25 @@ class PuroProducer(
 
     // TODO actually test this
     fun send(puroRecords: List<PuroRecord>) {
-        val stepCount = if (puroRecords.size % batchTotal == 0) {
-            puroRecords.size / batchTotal // 49/7 = 49
+        val stepCount = if (puroRecords.size % maximumWriteBatchSize == 0) {
+            puroRecords.size / maximumWriteBatchSize // 49/7 = 49
         } else {
-            (puroRecords.size / batchTotal) + 1 // maximum modulo is one smaller than the batch
+            (puroRecords.size / maximumWriteBatchSize) + 1 // maximum modulo is one smaller than the batch
         }
 
         for (step in 0..stepCount) {
-            val indices = step * puroRecords.size..<max((step + 1) * puroRecords.size, puroRecords.size)
+            val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
             val records = puroRecords.slice(indices).map { createRecordBuffer(it) }
             withLock { channel -> records.forEach { channel.write(it) } }
         }
     }
 
     fun withLock(block: (FileChannel) -> Unit) {
-        // Assuming on active segment at this point
-        FileChannel.open(streamFilePath, StandardOpenOption.APPEND).use { channel ->
+        // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
+        // the active segment could change.
+        // This has been marked on the README as 'Active segment transition race condition handling'
+        // Best way may be to read if 'tombstone'
+        FileChannel.open(getActiveSegment(), StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()
             var lock: FileLock?
             do {

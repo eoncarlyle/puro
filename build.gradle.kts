@@ -2,7 +2,7 @@ plugins {
     kotlin("jvm") version "2.0.21"
 }
 
-group = "com.iainschmitt"
+group = "com.iainschmitt.puro"
 version = "1.0-SNAPSHOT"
 
 repositories {
@@ -10,6 +10,7 @@ repositories {
 }
 
 dependencies {
+    implementation("io.methvin:directory-watcher:0.19.1")
     testImplementation(kotlin("test"))
 }
 

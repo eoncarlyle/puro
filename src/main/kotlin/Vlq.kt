@@ -17,6 +17,7 @@ fun Int.toVlqEncoding(): ByteBuffer {
     val bitsReq = Int.SIZE_BITS - this.countLeadingZeroBits()
     val bytesReq = ceilingDivision(bitsReq, 7)
     if (bytesReq <= 1) {
+        // !! Pool
         return ByteBuffer.allocate(1).put(this.last7Bit())
     }
     val finalBuffer = ByteBuffer.allocate(bytesReq)

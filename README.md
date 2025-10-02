@@ -7,6 +7,13 @@ This is probably wildly ambitious but this is an attempt to make an 'SQLite of e
 running Apache Kafka when producers and consumers are not separated by a network.  Rather than any daemonised processed, 
 there will just be a log format and client libraries for producers and consumers.
 
+## Action Items
+- [ ] Make, test working consumer
+- [ ] Batching producer writes, compare benchmarks
+- [x] Benchmarks on same level as `src`
+- [ ] Active segment transition race condition handling
+- [ ] Multithreaded producer tests
+
 ## Development Log
 
 ### 2025-10-01
@@ -28,6 +35,7 @@ while (true) {
     }
     key.reset()
 }
+// https://learning.oreilly.com/library/view/learning-java-4th/9781449372477/ch12s03.html#id2038584
 ```
 [Directory Watcher](https://github.com/gmethvin/directory-watcher/tree/main) seems to be the way forward.
 
@@ -39,6 +47,18 @@ forward may be to have a third type of actor in the system that is neither consu
 they are available to delete old segments and compact unused logs. This 'steward' would need to be configured, but if
 someone decides to have two different stewards with different compaction and deletion standards that's kind of their
 problem.
+
+I am not using much `ByteBuffer` functionality. Right now I'm sort of using them as a less convenient array. If a 
+smaller `recordBuffer` is created after a larger one, the initial buffer can be reused with a smaller limit.
+
+Benchmarking should be done with `kotlinx-benchmark`, blackholes will be need to make sure operations don't get deopted.
+
+We should only make one syscall per batch.
+
+Segment rollover tombstones should use a sentinel topic of `0xFF`. This will mean that consumers and producers will need
+to be able to work with non-string byte arrays as topics and handle them accordingly (i.e. explicitly test this) code 
+path. There should not be a public method that accepts a record with a non-string topic. There should be a method that
+carries out `rollover()`, but a) that should be on the steward and b) it will internally call the tombstone.
 
 ### 2025-09-29
 The incremental CRC calculations were introducing the zero calculation twice.
