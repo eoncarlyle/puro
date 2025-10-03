@@ -2,10 +2,9 @@ package com.iainschmitt.puro
 
 import PuroProducer
 import PuroRecord
-import createRecordBuffer
-import kotlinx.benchmark.Blackhole
 import org.openjdk.jmh.annotations.*
 import kotlinx.serialization.json.Json
+import org.openjdk.jmh.infra.Blackhole
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
@@ -16,7 +15,7 @@ import kotlin.io.path.exists
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @Warmup(iterations = 3, time = 1, timeUnit = TimeUnit.SECONDS)
-@Measurement(iterations = 10, time = 1, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 15, time = 1, timeUnit = TimeUnit.SECONDS)
 @Fork(1)
 open class PuroProducerBenchmark {
 
@@ -50,13 +49,20 @@ open class PuroProducerBenchmark {
 
     @Benchmark
     fun sendUnbatched() {
-        producer.send(records)
+        producer.send(records, false)
     }
 
     @Benchmark
-    fun benchmarkSendBatched(blackhole: Blackhole) {
-        producer.sendBatched(records) { buffer ->
-            blackhole.consume(buffer as Any?) {_ -> }
+    fun serialiseUnbatched(blackhole: Blackhole) {
+        producer.sendUnbatched(records) { buffers ->
+            { _ -> blackhole.consume(buffers) }
+        }
+    }
+
+    @Benchmark
+    fun serialiseBatched(blackhole: Blackhole) {
+        producer.sendBatched(puroRecords = records) { buffer ->
+            { _ -> blackhole.consume(buffer) }
         }
     }
 

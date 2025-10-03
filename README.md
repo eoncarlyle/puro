@@ -17,38 +17,13 @@ there will just be a log format and client libraries for producers and consumers
 ## Development Log
 
 ### 2025-10-02
-Before `createBatchedRecordBuffer`
 ```text
-Benchmark                            Mode  Cnt  Score   Error  Units
-PuroProducerBenchmark.benchmarkSend  avgt   10  3.719 ± 1.097  ms/op
+Benchmark                                 Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.sendBatched         avgt   15  2.108 ± 0.345  ms/op
+PuroProducerBenchmark.sendUnbatched       avgt   15  3.329 ± 0.932  ms/op
+PuroProducerBenchmark.serialiseBatched    avgt   15  0.939 ± 0.038  ms/op
+PuroProducerBenchmark.serialiseUnbatched  avgt   15  0.915 ± 0.026  ms/op
 ```
-
-```text
-Benchmark                            Mode  Cnt  Score   Error  Units
-PuroProducerBenchmark.benchmarkSend  avgt   10  2.800 ± 0.475  ms/op
-```
-
-```text
-Benchmark                            Mode  Cnt  Score   Error  Units
-PuroProducerBenchmark.benchmarkSend  avgt   10  2.503 ± 0.203  ms/op
-```
-
-After `createBatchedRecordBuffer`
-```text
-Benchmark                            Mode  Cnt  Score   Error  Units
-PuroProducerBenchmark.benchmarkSend  avgt   10  2.290 ± 0.158  ms/op
-```
-
-```text
-Benchmark                            Mode  Cnt  Score   Error  Units
-PuroProducerBenchmark.benchmarkSend  avgt   10  2.216 ± 0.271  ms/op
-```
-
-```text
-Benchmark                            Mode  Cnt  Score   Error  Units
-PuroProducerBenchmark.benchmarkSend  avgt   10  2.217 ± 0.386  ms/op
-```
-Honestly not as effective as I would have hoped - not even sure if this rises above noise
 
 ### 2025-10-01
 The following is dog-slow on MacOS because NIO polls rather than working with native filesystem notifications on Linux

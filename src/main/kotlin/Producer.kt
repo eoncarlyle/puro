@@ -183,7 +183,7 @@ class PuroProducer(
     }
 
     fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
-        puroRecords.size / maximumWriteBatchSize // 49/7 = 49
+        puroRecords.size / maximumWriteBatchSize // 49/7 = 7
     } else {
         (puroRecords.size / maximumWriteBatchSize) + 1 // maximum modulo is one smaller than the batch
     }
@@ -194,7 +194,7 @@ class PuroProducer(
     ) {
         val stepCount = getStepCount(puroRecords)
 
-        for (step in 0..stepCount) {
+        for (step in 0..<stepCount) {
             val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
             val recordBuffers = puroRecords.slice(indices).map { createRecordBuffer(it) }
             withLock { channel ->
@@ -207,10 +207,9 @@ class PuroProducer(
     fun sendBatched(puroRecords: List<PuroRecord>, onBatch: (ByteBuffer) -> (FileChannel) -> Unit) {
         val stepCount = getStepCount(puroRecords)
 
-        for (step in 0..stepCount) {
+        for (step in 0..<stepCount) {
             val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
             val batchedBuffer = createBatchedRecordBuffer(puroRecords.slice(indices))
-            //withLock { channel -> channel.write(batchedBuffer) }
             withLock { channel ->
                 val fn = onBatch(batchedBuffer)
                 fn(channel)
@@ -218,12 +217,11 @@ class PuroProducer(
         }
     }
 
-    // TODO actually test this
     fun send(puroRecords: List<PuroRecord>, isBatched: Boolean = true) {
         if (isBatched) {
-            sendUnbatched(puroRecords) { buffers -> { channel -> buffers.forEach { channel.write(it) } } }
-        } else {
             sendBatched(puroRecords) { buffer -> { channel -> channel.write(buffer) } }
+        } else {
+            sendUnbatched(puroRecords) { buffers -> { channel -> buffers.forEach { channel.write(it) } } }
         }
     }
 
