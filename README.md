@@ -94,6 +94,10 @@ to be able to work with non-string byte arrays as topics and handle them accordi
 path. There should not be a public method that accepts a record with a non-string topic. There should be a method that
 carries out `rollover()`, but a) that should be on the steward and b) it will internally call the tombstone.
 
+Thought that I just had on rollover detection: because all writes append, a writer knows when it aquires a lock that the
+previous record will not change out from under it. Also, with only one writer at a time and shared read locks, it shouldn't 
+be an issue to acquire a read lock within the write lock to check for rollover before write.
+
 ### 2025-09-29
 The incremental CRC calculations were introducing the zero calculation twice.
 There are a couple of places where I am returning an empty result or null when something invalid happens.
