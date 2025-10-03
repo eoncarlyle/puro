@@ -73,9 +73,8 @@ open class PuroProducerBenchmark {
 
     private fun resetDirectory() {
         if (streamDirectory.exists()) {
-            Files.walk(streamDirectory)
+            Files.list(streamDirectory)
                 .sorted(Comparator.reverseOrder())
-                .filter { it != streamDirectory }
                 .forEach { Files.deleteIfExists(it) }
             Files.deleteIfExists(streamDirectory)
         }

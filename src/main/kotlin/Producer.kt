@@ -1,8 +1,6 @@
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
-import java.nio.file.FileSystem
-import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -148,10 +146,6 @@ class PuroProducer(
     val streamDirectory: Path,
     val maximumWriteBatchSize: Int,
 ) {
-    // Currently assuming is on active segment
-    private val fileSystem: FileSystem = FileSystems.getDefault()
-
-    // Subject to change with rotation
     companion object {
         // This should be configurable
         val retryDelay = 10.milliseconds.toJavaDuration()
