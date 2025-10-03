@@ -55,7 +55,6 @@ fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
     return String(array) to crc8(array)
 }
 
-//! ByteBuffer state modification
 fun ByteBuffer.getSubsequence(length: Int): Pair<ByteBuffer, Byte> {
     val array = ByteArray(length)
     this.get(array, 0, array.size)

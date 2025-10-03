@@ -6,18 +6,24 @@ import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import kotlin.math.max
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
-import kotlin.io.path.name
-import kotlin.io.path.exists
 import kotlin.math.min
 
-// Will need version,
 data class PuroRecord(
     val topic: String,
     val key: ByteBuffer,
     val value: ByteBuffer,
+)
+
+data class ProtoPuroRecord(
+    val messageCrc: Byte,
+    val encodedTotalLength: ByteBuffer,
+    val encodedTopicLength: ByteBuffer,
+    val encodedTopic: ByteArray,
+    val encodedKeyLength: ByteBuffer,
+    val key: ByteBuffer,
+    val value: ByteBuffer
 )
 
 fun createRecordBuffer(record: PuroRecord): ByteBuffer {
@@ -32,12 +38,12 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val encodedKeyLength = keyLength.toVlqEncoding()
     val valueLength = value.capacity()
 
-    val totalLength =
+    val subrecordLength =
         encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-    val encodedTotalLength = totalLength.toVlqEncoding()
+    val encodedTotalLength = subrecordLength.toVlqEncoding()
 
     // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-    val recordBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + totalLength)
+    val recordBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + subrecordLength)
 
     val messageCrc = getMessageCrc(
         encodedTotalLength = encodedTotalLength,
@@ -53,22 +59,71 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
         .put(encodedKeyLength).put(key).put(value)
 
     return recordBuffer.rewind()
-//    var m: ArrayList<Byte> = ArrayList()
-//    m.add(messageCrc)
-//    encodedTotalLength.array().forEach { m.add(it) }
-//    encodedTopicLength.array().forEach { m.add(it) }
-//    encodedTopic.forEach { m.add(it) }
-//    encodedKeyLength.array().forEach { m.add(it) }
-//    key.array().forEach { m.add(it) }
-//    value.array().forEach { m.add(it) }
-//     recordBuffer.rewind()
-//    val recordArray = ByteArray(recordBuffer.remaining())
-//    recordBuffer.get(recordArray)
-//    recordBuffer.rewind()
-//    val mArray = m.toByteArray()
-//    println("Record: ${recordArray.contentToString()}")
-//    println("M:      ${mArray.contentToString()}")
-//    println("Equal:  ${recordArray.contentEquals(mArray)}")
+}
+
+fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
+    val protoRecords = Array<ProtoPuroRecord?>(puroRecords.size) { null }
+    var batchLength = 0
+
+    puroRecords.forEachIndexed { index, record ->
+        val (topic, key, value) = record
+        rewindAll(key, value)
+
+        // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
+        val encodedTopic = topic.encodeToByteArray()
+        val topicLength = encodedTopic.size
+        val encodedTopicLength = topicLength.toVlqEncoding()
+        val keyLength = key.capacity()
+        val encodedKeyLength = keyLength.toVlqEncoding()
+        val valueLength = value.capacity()
+
+        val subrecordLength =
+            encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+        val encodedTotalLength = subrecordLength.toVlqEncoding()
+
+        // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
+        val recordLength = 1 + encodedTotalLength.capacity() + subrecordLength
+        batchLength += recordLength
+
+        val messageCrc = getMessageCrc(
+            encodedTotalLength = encodedTotalLength,
+            encodedTopicLength = encodedTopicLength,
+            encodedTopic = encodedTopic,
+            encodedKeyLength = encodedKeyLength,
+            key = key,
+            value = value
+        )
+
+        rewindAll(encodedTotalLength, encodedTopicLength, encodedKeyLength, key, value)
+
+        protoRecords[index] = ProtoPuroRecord(
+            messageCrc,
+            encodedTotalLength,
+            encodedTopicLength,
+            encodedTopic,
+            encodedKeyLength,
+            key,
+            value
+        )
+    }
+
+    val batchBuffer = ByteBuffer.allocate(batchLength)
+
+    protoRecords.forEach { record: ProtoPuroRecord? ->
+
+        val (messageCrc,
+            encodedTotalLength,
+            encodedTopicLength,
+            encodedTopic,
+            encodedKeyLength,
+            key,
+            value) = record!!
+
+        batchBuffer.put(messageCrc).put(encodedTotalLength).put(encodedTopicLength).put(encodedTopic)
+            .put(encodedKeyLength).put(key).put(value)
+    }
+
+    return batchBuffer.rewind()
 }
 
 fun getMessageCrc(
@@ -90,7 +145,7 @@ fun getMessageCrc(
 // This should have a maximum value to prevent starvation
 // Probably better to return null/failing result for misconfiguration
 class PuroProducer(
-    val streamDirectory: String,
+    val streamDirectory: Path,
     val maximumWriteBatchSize: Int,
 ) {
     // Currently assuming is on active segment
@@ -102,21 +157,22 @@ class PuroProducer(
         val retryDelay = 10.milliseconds.toJavaDuration()
     }
 
-    fun extractSegmentName(path: Path) = path.fileName.toString().substringAfter("stream").substringBefore(".puro").toIntOrNull() ?: -1
-    val compareBySegmentName =  Comparator<Path> { p1, p2 -> extractSegmentName(p1) - extractSegmentName(p2) }
+    fun extractSegmentName(path: Path) =
+        path.fileName.toString().substringAfter("stream").substringBefore(".puro").toIntOrNull() ?: -1
+
+    val compareBySegmentName = Comparator<Path> { p1, p2 -> extractSegmentName(p1) - extractSegmentName(p2) }
 
     fun getActiveSegment(): Path {
-        val streamDir = fileSystem.getPath(streamDirectory)
-        Files.createDirectories(streamDir)
+        Files.createDirectories(streamDirectory)
 
-        val topFoundSegment = Files.list(streamDir).use { stream ->
+        val topFoundSegment = Files.list(streamDirectory).use { stream ->
             stream.filter { it.fileName.toString().matches(Regex("""stream\d+\.puro""")) }.max(compareBySegmentName)
         }
 
         return if (topFoundSegment.isPresent) {
             topFoundSegment.get()
         } else {
-            streamDir.resolve("stream0.puro").also { Files.createFile(it) }
+            streamDirectory.resolve("stream0.puro").also { Files.createFile(it) }
         }
     }
 
@@ -126,18 +182,48 @@ class PuroProducer(
         withLock { channel -> channel.write(recordBuffer) }
     }
 
-    // TODO actually test this
-    fun send(puroRecords: List<PuroRecord>) {
-        val stepCount = if (puroRecords.size % maximumWriteBatchSize == 0) {
-            puroRecords.size / maximumWriteBatchSize // 49/7 = 49
-        } else {
-            (puroRecords.size / maximumWriteBatchSize) + 1 // maximum modulo is one smaller than the batch
-        }
+    fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
+        puroRecords.size / maximumWriteBatchSize // 49/7 = 49
+    } else {
+        (puroRecords.size / maximumWriteBatchSize) + 1 // maximum modulo is one smaller than the batch
+    }
+
+    fun sendUnbatched(
+        puroRecords: List<PuroRecord>,
+        onRecord: (List<ByteBuffer>) -> (FileChannel) -> Unit
+    ) {
+        val stepCount = getStepCount(puroRecords)
 
         for (step in 0..stepCount) {
             val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
-            val records = puroRecords.slice(indices).map { createRecordBuffer(it) }
-            withLock { channel -> records.forEach { channel.write(it) } }
+            val recordBuffers = puroRecords.slice(indices).map { createRecordBuffer(it) }
+            withLock { channel ->
+                val inner = onRecord(recordBuffers)
+                inner(channel)
+            }
+        }
+    }
+
+    fun sendBatched(puroRecords: List<PuroRecord>, onBatch: (ByteBuffer) -> (FileChannel) -> Unit) {
+        val stepCount = getStepCount(puroRecords)
+
+        for (step in 0..stepCount) {
+            val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
+            val batchedBuffer = createBatchedRecordBuffer(puroRecords.slice(indices))
+            //withLock { channel -> channel.write(batchedBuffer) }
+            withLock { channel ->
+                val fn = onBatch(batchedBuffer)
+                fn(channel)
+            }
+        }
+    }
+
+    // TODO actually test this
+    fun send(puroRecords: List<PuroRecord>, isBatched: Boolean = true) {
+        if (isBatched) {
+            sendUnbatched(puroRecords) { buffers -> { channel -> buffers.forEach { channel.write(it) } } }
+        } else {
+            sendBatched(puroRecords) { buffer -> { channel -> channel.write(buffer) } }
         }
     }
 

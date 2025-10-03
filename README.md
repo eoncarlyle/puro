@@ -16,6 +16,40 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Development Log
 
+### 2025-10-02
+Before `createBatchedRecordBuffer`
+```text
+Benchmark                            Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.benchmarkSend  avgt   10  3.719 ± 1.097  ms/op
+```
+
+```text
+Benchmark                            Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.benchmarkSend  avgt   10  2.800 ± 0.475  ms/op
+```
+
+```text
+Benchmark                            Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.benchmarkSend  avgt   10  2.503 ± 0.203  ms/op
+```
+
+After `createBatchedRecordBuffer`
+```text
+Benchmark                            Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.benchmarkSend  avgt   10  2.290 ± 0.158  ms/op
+```
+
+```text
+Benchmark                            Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.benchmarkSend  avgt   10  2.216 ± 0.271  ms/op
+```
+
+```text
+Benchmark                            Mode  Cnt  Score   Error  Units
+PuroProducerBenchmark.benchmarkSend  avgt   10  2.217 ± 0.386  ms/op
+```
+Honestly not as effective as I would have hoped - not even sure if this rises above noise
+
 ### 2025-10-01
 The following is dog-slow on MacOS because NIO polls rather than working with native filesystem notifications on Linux
 or Win32.
@@ -96,6 +130,8 @@ keyLength: varlong
 key: byte[]
 value: byte[]
 ```
+
+I needed a word for it so the 
 
 The CRC covers the entire rest of the message. Message length computed from total, topic, and key lengths.
 I am not super confident in the 'what happens if the write is incomplete' which makes me think that an index in the directory makes sense

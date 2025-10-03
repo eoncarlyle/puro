@@ -2,10 +2,15 @@ package com.iainschmitt.puro
 
 import PuroProducer
 import PuroRecord
+import createRecordBuffer
+import kotlinx.benchmark.Blackhole
 import org.openjdk.jmh.annotations.*
 import kotlinx.serialization.json.Json
 import java.nio.ByteBuffer
+import java.nio.file.Files
 import java.util.concurrent.TimeUnit
+import kotlin.io.path.Path
+import kotlin.io.path.exists
 
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
@@ -17,10 +22,13 @@ open class PuroProducerBenchmark {
 
     private lateinit var producer: PuroProducer
     private lateinit var records: List<PuroRecord>
+    var streamDirectory = Path("/tmp/puro")
 
     @Setup
     fun setup() {
-        producer = PuroProducer("/tmp/puro", 100)
+        resetDirectory()
+        Files.createDirectory(streamDirectory)
+        producer = PuroProducer(streamDirectory, 100)
 
         val flagsJson = object {}.javaClass.getResourceAsStream("/flags.json")
             ?.bufferedReader()
@@ -36,11 +44,34 @@ open class PuroProducerBenchmark {
     }
 
     @Benchmark
-    fun benchmarkSend() {
+    fun sendBatched() {
         producer.send(records)
+    }
+
+    @Benchmark
+    fun sendUnbatched() {
+        producer.send(records)
+    }
+
+    @Benchmark
+    fun benchmarkSendBatched(blackhole: Blackhole) {
+        producer.sendBatched(records) { buffer ->
+            blackhole.consume(buffer as Any?) {_ -> }
+        }
     }
 
     @TearDown
     fun tearDown() {
+        resetDirectory()
+    }
+
+    private fun resetDirectory() {
+        if (streamDirectory.exists()) {
+            Files.walk(streamDirectory)
+                .sorted(Comparator.reverseOrder())
+                .filter { it != streamDirectory }
+                .forEach { Files.deleteIfExists(it) }
+            Files.deleteIfExists(streamDirectory)
+        }
     }
 }
