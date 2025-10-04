@@ -147,7 +147,7 @@ class PuroProducer(
     val maximumWriteBatchSize: Int,
 ) {
     companion object {
-        // This should be configurable
+        // This should be configurable?
         val retryDelay = 10.milliseconds.toJavaDuration()
     }
 
@@ -159,6 +159,7 @@ class PuroProducer(
     fun getActiveSegment(): Path {
         Files.createDirectories(streamDirectory)
 
+        // Note: spurious segment problem, needs to read that a segment tombstone has been placed
         val topFoundSegment = Files.list(streamDirectory).use { stream ->
             stream.filter { it.fileName.toString().matches(Regex("""stream\d+\.puro""")) }.max(compareBySegmentName)
         }

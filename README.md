@@ -12,9 +12,35 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
 - [ ] Active segment transition race condition handling
+- [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-03
+While `io.methvin.watcher.DirectoryWatcher` works, it does not provide the new file offset with incoming events. There
+is apparently no issue with keeping a file channel open while waiting for new offsets to come in. A default logger is
+applied which can be worked around without issue. Note that `DirectoryWatcher#watch` is a blocking operation (which
+definitely makes sense); clients should define if the consumer should return after listening, but that might be 
+something for the future.
+
+I just realised there is something of a 'spurious segment' problem: if the listener gets a file creation event for a 
+.puro file but it can demonstrate that there is not a segment tombstone on the current segment, that is something
+that should be logged. The thing this defends against is accidental creation of a segment file that was not created by
+a Puro 'steward'. When a producer is starting up it needs to be congnisant of spurious segments. The producers are not
+in a good spot to do anything about this but consumers will and stewards may have directory listening capabilities. If a
+consumer sees a new segment and then checks that it a) is at the end of it's currently active segment and b) a segment
+tombstone has not been placed then it could place a spurious segment tombstone onto the spurious topic. Producers can/
+should be setup such that if there is a segment without a segment tombstone of lower order than the highest order
+segment, that it will wait until a predetermined timeout. This way if it is first to read the spurious segment it can
+wait until a client or steward can act on it first. This of course leaves open the possibility that, if there are no
+active consumers, the producer cannot start. But in this case the
+
+I do not think that active consumers will really be impacted by this. They only respond to a segment tombstone, and the 
+producers are not rotating segments on their own volition. The steward that places the segment tombstone could place a
+spurious segment tombstone on the spurious segment before forcing a producer rollover - order is important here, but
+it is also pretty easy to establish. Ultimately this is congruent with many _Little Book of Sempahores_ problems, but
+files are of course more complicated than sempahores just because of partial and nonexclusive file locking.
 
 ### 2025-10-02
 ```text

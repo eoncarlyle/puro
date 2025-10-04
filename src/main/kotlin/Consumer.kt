@@ -1,4 +1,5 @@
 import java.nio.ByteBuffer
+import java.nio.file.Path
 
 fun getRecord(byteBuffer: ByteBuffer): PuroRecord? {
     val expectedCrc = byteBuffer.get()
@@ -14,4 +15,10 @@ fun getRecord(byteBuffer: ByteBuffer): PuroRecord? {
     return if (expectedCrc == actualCrc) {
         PuroRecord(topic, key, value)
     } else null
+}
+
+class PuroConsumer(
+    val streamDirectory: Path,
+) {
+
 }
