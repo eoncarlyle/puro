@@ -17,6 +17,23 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Development Log
 
+### 2025-10-06
+What happens if a spurious segment is written to, even accidentally or by a non-Puro process? The existence of a segment 
+without a tombstone should be enough, but to allow future consumers to not get too distracted does it make sense to 
+place a spurious stream control event on the spurious stream?
+
+Also, what should be done to handle incomplete messages? Should the producers and consumers store a 'last safe' file
+offset and have the ability to null out the message? This would be a new control message (I hope we are not running out 
+of topics) that would effectively say 'the message is X bytes long, ignore it'. The cost of this that it makes the 
+locking a little more complicated: the producer may have to 'rewind' a little bit, and the reader's can't lock the 
+entire file otherwise producers couldn't 'rewind': we don't a priori know the size of messages.
+
+Also, there should be some message size ceiling where batches are broken up on the consumer side to prevent someone
+from ramming a massive message
+
+As far as an example of results types go, Rust's [ErrorKind](https://doc.rust-lang.org/std/io/enum.ErrorKind.html) seems
+like a workable example.
+
 ### 2025-10-05
 The current `main` function demonstrates how to use `fileChannels` in a persistent way. No issues - during segment
 rollover the channel will change, but that is a given. It also doesn't look like the default logger is really doing
