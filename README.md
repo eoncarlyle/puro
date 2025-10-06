@@ -9,13 +9,18 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Action Items
 - [ ] Make, test working consumer
-- [ ] Batching producer writes, compare benchmarks
+- [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
 - [ ] Active segment transition race condition handling
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-05
+The current `main` function demonstrates how to use `fileChannels` in a persistent way. No issues - during segment
+rollover the channel will change, but that is a given. It also doesn't look like the default logger is really doing
+anything in this example. Probably still a good idea to muzzle this in some way, but :shrug:.
 
 ### 2025-10-03
 While `io.methvin.watcher.DirectoryWatcher` works, it does not provide the new file offset with incoming events. There
