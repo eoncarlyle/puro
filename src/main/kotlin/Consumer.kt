@@ -44,6 +44,8 @@ class PuroConsumer(
                             // boundaries then that makes this much simpler but I don't know how realistic
                             // that is. If we can't assume that then we'd have to store the truncated message
                             // fragment alongside the segment offset and then concatenate it with the new poll
+														// however, telling the difference between a truncated message that will be
+                            // be completed from a permanently errored message may not be really possible
                         }
                     } // else {} //Active Segment concerns
                 }
