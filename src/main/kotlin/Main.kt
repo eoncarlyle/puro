@@ -4,7 +4,6 @@ import java.nio.channels.FileChannel
 import java.nio.file.Path
 import kotlin.io.path.Path
 
-
 class DirectoryWatchingUtility(directoryToWatch: Path?, onEvent: (DirectoryChangeEvent) -> Unit) {
     val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
         .path(directoryToWatch) // or use paths(directoriesToWatch)

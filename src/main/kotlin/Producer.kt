@@ -1,7 +1,5 @@
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.channels.FileLock
-import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.time.Duration.Companion.milliseconds
@@ -23,6 +21,8 @@ data class ProtoPuroRecord(
     val key: ByteBuffer,
     val value: ByteBuffer
 )
+
+fun rewindAll(vararg bytes: ByteBuffer) = bytes.forEach { it.rewind() }
 
 fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val (topic, key, value) = record
@@ -151,30 +151,9 @@ class PuroProducer(
         val retryDelay = 10.milliseconds.toJavaDuration()
     }
 
-    fun extractSegmentName(path: Path) =
-        path.fileName.toString().substringAfter("stream").substringBefore(".puro").toIntOrNull() ?: -1
-
-    val compareBySegmentName = Comparator<Path> { p1, p2 -> extractSegmentName(p1) - extractSegmentName(p2) }
-
-    fun getActiveSegment(): Path {
-        Files.createDirectories(streamDirectory)
-
-        // Note: spurious segment problem, needs to read that a segment tombstone has been placed
-        val topFoundSegment = Files.list(streamDirectory).use { stream ->
-            stream.filter { it.fileName.toString().matches(Regex("""stream\d+\.puro""")) }.max(compareBySegmentName)
-        }
-
-        return if (topFoundSegment.isPresent) {
-            topFoundSegment.get()
-        } else {
-            streamDirectory.resolve("stream0.puro").also { Files.createFile(it) }
-        }
-    }
-
-    // TODO actually test this
     fun send(puroRecord: PuroRecord) {
         val recordBuffer = createRecordBuffer(puroRecord)
-        withLock { channel -> channel.write(recordBuffer) }
+        withProducerLock { channel -> channel.write(recordBuffer) }
     }
 
     fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -192,7 +171,7 @@ class PuroProducer(
         for (step in 0..<stepCount) {
             val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
             val recordBuffers = puroRecords.slice(indices).map { createRecordBuffer(it) }
-            withLock { channel ->
+            withProducerLock { channel ->
                 val inner = onRecord(recordBuffers)
                 inner(channel)
             }
@@ -205,8 +184,8 @@ class PuroProducer(
         for (step in 0..<stepCount) {
             val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
             val batchedBuffer = createBatchedRecordBuffer(puroRecords.slice(indices))
-            withLock { channel ->
-                val fn = onBatch(batchedBuffer)
+            withProducerLock { channel ->
+                val fn= onBatch(batchedBuffer)
                 fn(channel)
             }
         }
@@ -220,21 +199,12 @@ class PuroProducer(
         }
     }
 
-    fun withLock(block: (FileChannel) -> Unit) {
+    fun withProducerLock(block: (FileChannel) -> Unit) {
         // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
         // the active segment could change.
         // This has been marked on the README as 'Active segment transition race condition handling'
         // Best way may be to read if 'tombstone'
-        FileChannel.open(getActiveSegment(), StandardOpenOption.APPEND).use { channel ->
-            val fileSize = channel.size()
-            var lock: FileLock?
-            do {
-                lock = channel.tryLock(fileSize, Long.MAX_VALUE - fileSize, false)
-                if (lock == null) {
-                    Thread.sleep(retryDelay) // Should eventually give up
-                }
-            } while (lock == null)
-            block(channel)
-        }
+        val channel = FileChannel.open(getActiveSegment(this.streamDirectory), StandardOpenOption.APPEND)
+        withLock(channel, block)
     }
 }

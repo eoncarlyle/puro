@@ -12,12 +12,51 @@ there will just be a log format and client libraries for producers and consumers
 - [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
 - [ ] Active segment transition race condition handling
+- [ ] Reader indexes and incomplete message repair
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
 ## Development Log
 
-### 2025-10-06
+### 2025-10-06-1
+
+If we assume that any partial message is due to a producer that irrecoverably terminates, then the consumers can mark 
+the bits from the last safe offset to the end of the file as garbage. This does no good when there are no consumers, but
+when there are no consumers there is no contention for reading the file. It does kinda sound like this would require
+consumers and producers scanning through the entire file, unless the inverted total length was left at the end of the
+message. I'd have to be careful about buffer allocation but that isn't the end of the world. The crc would still be for
+all bits after it in the message, but the value deserialisation would have to stop short of the entire message because
+of the `invertedTotalLength` appended on the end.
+
+Message Format
+```text
+crc: uint8
+totalLength: varint
+topicLength: varint
+topic: byte[]
+keyLength: varint
+key: byte[]
+value: byte[]
+invertedTotalLength: inverted varint
+```
+
+This all seems clever - but it only works for intact messages so that's kinda moot. I don't love the idea of adding 
+different file types that aren't segments, but another possibility is for a very, very small reader index. What I mean
+by this is that readers can attempt to acquire an exclusive lock to an `indexN.puro` file for the _N_ active segment at
+the end of each batch. This could then be used by a Puro producer to work backwards from a checkpoint. It isn't 
+neccessary for the most recent checkpoint to truly be the last good message, but it does need to be _a_ message. Cutting
+down on syscalls by only writing the most recent message returned from a run would be possible, or every _M_ messages.
+It doesn't really matter as long as the process of doing a full file scan is prevented.
+
+Without a consumer operating at some point on the stream to populate the index, the first producer can't assume that 
+any valid messages are on the stream, so they have to scan through the whole stream. This is a reason to keep segments
+on the shorter side, but without consumers there also isn't a good reason to even operate the stream in the first place.
+
+Two other notes about consumers
+- Consumers are in the best possible position to validate segment integrity
+- Consumers will need to relinquish read locks that block bad segments to allow producers to fix the problem
+
+### 2025-10-06-0
 What happens if a spurious segment is written to, even accidentally or by a non-Puro process? The existence of a segment 
 without a tombstone should be enough, but to allow future consumers to not get too distracted does it make sense to 
 place a spurious stream control event on the spurious stream?
@@ -150,10 +189,10 @@ Header: fixed size to indicate if active segment?
 Message Format
 ```text
 crc: uint8
-totalLength: varlong
-topicLength: varlong
+totalLength: varint
+topicLength: varint
 topic: byte[]
-keyLength: varlong
+keyLength: varint
 key: byte[]
 value: byte[]
 ```
