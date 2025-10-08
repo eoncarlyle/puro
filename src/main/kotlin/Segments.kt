@@ -4,6 +4,7 @@ import java.nio.channels.FileLock
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import kotlin.io.path.exists
 import kotlin.io.use
 import kotlin.use
 
@@ -14,7 +15,9 @@ val compareBySegmentName = Comparator<Path> { p1, p2 -> extractSegmentName(p1) -
 
 // Note: spurious segment problem, needs to read that a segment tombstone has been placed, this will need to change
 fun getActiveSegment(streamDirectory: Path): Path {
-    Files.createDirectories(streamDirectory)
+    if (!streamDirectory.exists()) {
+        Files.createDirectories(streamDirectory)
+    }
 
     val topFoundSegment = Files.list(streamDirectory).use { stream ->
         stream.filter { it.fileName.toString().matches(Regex("""stream\d+\.puro""")) }.max(compareBySegmentName)
@@ -24,23 +27,5 @@ fun getActiveSegment(streamDirectory: Path): Path {
         topFoundSegment.get()
     } else {
         streamDirectory.resolve("stream0.puro").also { Files.createFile(it) }
-    }
-}
-
-fun withLock(fileChannel: FileChannel, block: (FileChannel) -> Unit) {
-    // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
-    // the active segment could change.
-    // This has been marked on the README as 'Active segment transition race condition handling'
-    // Best way may be to read if 'tombstone'
-    fileChannel.use { channel ->
-        val fileSize = channel.size()
-        var lock: FileLock?
-        do {
-            lock = channel.tryLock(fileSize, Long.MAX_VALUE - fileSize, false)
-            if (lock == null) {
-                Thread.sleep(retryDelay) // Should eventually give up
-            }
-        } while (lock == null)
-        block(channel)
     }
 }

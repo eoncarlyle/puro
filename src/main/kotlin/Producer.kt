@@ -1,5 +1,6 @@
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.time.Duration.Companion.milliseconds
@@ -185,7 +186,7 @@ class PuroProducer(
             val indices = step * maximumWriteBatchSize..<min((step + 1) * maximumWriteBatchSize, puroRecords.size)
             val batchedBuffer = createBatchedRecordBuffer(puroRecords.slice(indices))
             withProducerLock { channel ->
-                val fn= onBatch(batchedBuffer)
+                val fn = onBatch(batchedBuffer)
                 fn(channel)
             }
         }
@@ -204,7 +205,16 @@ class PuroProducer(
         // the active segment could change.
         // This has been marked on the README as 'Active segment transition race condition handling'
         // Best way may be to read if 'tombstone'
-        val channel = FileChannel.open(getActiveSegment(this.streamDirectory), StandardOpenOption.APPEND)
-        withLock(channel, block)
+        FileChannel.open(getActiveSegment(streamDirectory), StandardOpenOption.APPEND).use { channel ->
+            val fileSize = channel.size()
+            var lock: FileLock?
+            do {
+                lock = channel.tryLock(fileSize, Long.MAX_VALUE - fileSize, false)
+                if (lock == null) {
+                    Thread.sleep(retryDelay) // Should eventually give up
+                }
+            } while (lock == null)
+            block(channel)
+        }
     }
 }

@@ -12,11 +12,54 @@ there will just be a log format and client libraries for producers and consumers
 - [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
 - [ ] Active segment transition race condition handling
+- [ ] Write size ceiling specification (small) 
+- [ ] Benchmarks: investigation on read buffer size
 - [ ] Reader indexes and incomplete message repair
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-08
+While I've done more thinking about incomplete message updates from producers, sitting down to write the consumer 
+implementation has made me think about how if a producer writes 100+ Mb of messages in one go we will _not_ want to 
+read the whole thing into memory. I haven't yet put a ceiling on write sizes but will need to do so eventually. But 
+anyways apparently people like using 8k read buffers (there is some empirical work backing this). As far as 
+disambiguating failing writes from incomplete writes, Jesse disappointingly said that it was out of is wheelhouse so
+my search continues on this. But we'll be forced to handle this for the batched reads on the consumer.
+
+One thing of note is that if the reader knew when the writer lock was relinquished that would allow the reader to 
+distinguish this. Note that if a consumer can access the write lock around the offending segment it is necessarily the
+case that the writer is finished because it has relinquished the write lock at that part of the file. But that leaves a 
+question: how can a reader tell the difference between a writer that isn't finished and a reader that is 'investigating'
+and possibly repairing the segment? Maybe the answer is that they don't _need_ to. This will require saving the offset
+and changing over file channels, but as soon as a CRC is off the reader knows an end-file offset and there can be a race
+between consumers to acquire the exclusive lock between the last safe offset and the final offset. This can then let the
+producers continue on their merry way, with the first consumer converting the message to a control message. Only one 
+consumer should ever have to clean the message, but that isn't an invariant we need to depend on.
+
+### 2025-10-07
+The question "how large can a write be to produce one `FSEvent` or `inotify` event" isn't super easy to predict. It is
+very hard to a consumer to _a priori_ differentiate between a write that is incomplete due to an error and one that is 
+incomplete because it is large. Do note that for large writes the time required for event consumption gets larger, so
+maybe there is a grace period for sufficiently large writes? My model for this is that the smallest file that could 
+force multiple events would be split in roughly two, so the first thing the consumer would see would be a substantial
+offset change followed by another substantial offset change. Thresholds on this may be difficult to setup. 
+
+Relevant manpages
+- MacOS
+  - `man 2 kevent`
+  - `man 2 open`
+  - `man 2 write`
+  - `man 2 fcntl`
+  - `man 9 vnode`
+  - `man 7 fsevents`
+- Linux
+  - `man 7 inotify`
+  - `man 7 fsnotify`
+  - `man 7 fanotify`
+  - `man 2 write`
+  - `man 2 pwrite`
 
 ### 2025-10-06-1
 
@@ -203,8 +246,8 @@ The CRC covers the entire rest of the message. Message length computed from tota
 I am not super confident in the 'what happens if the write is incomplete' which makes me think that an index in the directory makes sense
 
 Message Limits
-- Topic, key no more than 1 kilobytes
-- Value no more than 10 megabyte
+- Topic, key no more than 1 kilobyte
+- Value no more than 10 megabytes
 
 ## Experimentation
 

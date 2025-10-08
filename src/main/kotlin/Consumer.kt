@@ -29,7 +29,6 @@ class PuroConsumer(
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) {
     var activeSegmentPath = getActiveSegment(streamDirectory)
-    var activeSegmentChannel = FileChannel.open(activeSegmentPath, StandardOpenOption.READ)
     var offset = 0
 
     val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
@@ -63,14 +62,25 @@ class PuroConsumer(
         return Thread { watcher?.watch() }
     }
 
-    private fun updateActiveSegment() {
+    private fun getActiveSegmentChannel(): FileChannel {
         activeSegmentPath = getActiveSegment(streamDirectory)
-        activeSegmentChannel = FileChannel.open(activeSegmentPath)
+        return FileChannel.open(activeSegmentPath, StandardOpenOption.READ)
     }
 
-
-
-    fun withConsumerLock(block: (FileChannel) -> Unit) {
-        withLock(activeSegmentChannel, block)
+    fun withConsumerLock(position: Long, size: Long, block: (FileChannel) -> Unit) {
+        // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
+        // the active segment could change.
+        // This has been marked on the README as 'Active segment transition race condition handling'
+        // Best way may be to read if 'tombstone'
+        getActiveSegmentChannel().use { channel ->
+            var lock: FileLock?
+            do {
+                lock = channel.tryLock(position, size, true)
+                if (lock == null) {
+                    Thread.sleep(retryDelay) // Should eventually give up
+                }
+            } while (lock == null)
+            block(channel)
+        }
     }
 }
