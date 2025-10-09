@@ -48,6 +48,8 @@ fun ByteBuffer.fromVlq(): Triple<Int, Int, Byte> {
     return Triple(result, bitCount, crc8)
 }
 
+fun ByteBuffer.readSafety() = if (this.hasRemaining()) { this } else null
+
 //! ByteBuffer state modification
 fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
     val array = ByteArray(length)

@@ -1,11 +1,6 @@
-import PuroProducer.Companion.retryDelay
-import java.nio.channels.FileChannel
-import java.nio.channels.FileLock
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import kotlin.io.path.exists
-import kotlin.io.use
 import kotlin.use
 
 fun extractSegmentName(path: Path) =
@@ -14,7 +9,7 @@ fun extractSegmentName(path: Path) =
 val compareBySegmentName = Comparator<Path> { p1, p2 -> extractSegmentName(p1) - extractSegmentName(p2) }
 
 // Note: spurious segment problem, needs to read that a segment tombstone has been placed, this will need to change
-fun getActiveSegment(streamDirectory: Path): Path {
+fun getActiveSegmentPath(streamDirectory: Path): Path {
     if (!streamDirectory.exists()) {
         Files.createDirectories(streamDirectory)
     }

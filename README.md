@@ -20,7 +20,11 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Development Log
 
-### 2025-10-08
+### 2025-10-08-1
+You _have_ to fix the fact that the consumer and producer have entirely different ways to count bit length. The consumer
+method is probably better, but this is very confusing.
+
+### 2025-10-08-0
 While I've done more thinking about incomplete message updates from producers, sitting down to write the consumer 
 implementation has made me think about how if a producer writes 100+ Mb of messages in one go we will _not_ want to 
 read the whole thing into memory. I haven't yet put a ceiling on write sizes but will need to do so eventually. But 
