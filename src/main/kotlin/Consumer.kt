@@ -31,8 +31,8 @@ fun getRecord(byteBuffer: ByteBuffer): PuroRecord? {
 private fun allNonNull(
     lengthData: Triple<Int, Int, Byte>?,
     topicLengthData: Triple<Int, Int, Byte>?,
-    keyMetdata: Triple<Int, Int, Byte>?,
-) = lengthData != null && topicLengthData != null && keyMetdata != null
+    keyMetadata: Triple<Int, Int, Byte>?,
+) = lengthData != null && topicLengthData != null && keyMetadata != null
 
 
 fun getFetchInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<List<PuroRecord>, Long> {
@@ -71,7 +71,7 @@ fun getFetchInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<L
 
         // The else branch isn't advancing the offset because it is possible that this is the next batch
         if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetdata != null && keyData != null && valueData != null) {
-            val (encodedTotalLength, encodedTotalLengthBitCount, crc1) = lengthData
+            val (_, encodedTotalLengthBitCount, crc1) = lengthData
             val (topicLength, topicLengthBitCount, crc2) = topicLengthData
             val (topic, crc3) = topicMetadata
             val (keyLength, keyLengthBitCount, crc4) = keyMetdata
@@ -88,7 +88,7 @@ fun getFetchInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<L
             }
 
             // These are necessarily 'interior' messages.
-            offset += subrecordLength
+            offset += totalLength
         }
     }
     return Pair(records, offset)
@@ -125,6 +125,7 @@ class PuroConsumer(
                 DirectoryChangeEvent.EventType.CREATE -> {} //May have active segment management concerns
                 DirectoryChangeEvent.EventType.DELETE -> {} //Log something probably
                 DirectoryChangeEvent.EventType.OVERFLOW -> {} //Log something probably
+                else -> {} // This should never happen
             }
         }
         .build()
