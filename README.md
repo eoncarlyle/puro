@@ -9,25 +9,32 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Action Items
 - [ ] Make, test working consumers
+  - [ ] Fetch process buffer check: I think not all opertaions will work
+  - [ ] Event loop
+  - [ ] Consumer result types
+  - [ ] `onHardProducerTransition`
+- [ ] Producer result types
+- [ ] Active segment transition race condition handling
 - [ ] Protection on VLQs
 - [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
-- [ ] Active segment transition race condition handling
 - [ ] Write size ceiling specification (small) 
 - [ ] Benchmarks: investigation on read buffer size
-- [ ] Reader indexes and incomplete message repair
+- [ ] Reader indexes
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
 ## Development Log
 
 ### 2025-10-10
-If the producers are producing faster than the consumers can consume I think the logic is conpketely broken with the callback,
-so I will need to build some simple event loop and keep track of producer offsets. Also, if the a message was truncated but we do 
-have the length of the message that gives us a great hint about hard producer resets, and so may be worth keeping. Also, as of the
-current commit the mechanism for hard producer transition will only wlrkm id there is a live consumer. This wouldn't be true if the
+If the producers are producing faster than the consumers can consume I think the logic is conpketely broken with the 
+callback, so I will need to build some simple event loop and keep track of producer offsets. Also, if the a message was 
+truncated, but we do have the length of the message that gives us a great hint about hard producer resets, and so may be 
+worth keeping. Also, as of the current commit the mechanism for hard producer transition will only work if there is a live consumer. This wouldn't be true if the
 messages had inverted length as the last field, but that can probably wait. There are also no current affordances for controll
 messages.
+
+
 
 ### 2025-10-08-1
 You _have_ to fix the fact that the consumer and producer have entirely different ways to count bit length. The consumer
