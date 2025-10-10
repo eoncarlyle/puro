@@ -35,7 +35,7 @@ private fun allNonNull(
 ) = lengthData != null && topicLengthData != null && keyMetdata != null
 
 
-fun getPollInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<List<PuroRecord>, Long> {
+fun getFetchInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<List<PuroRecord>, Long> {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
 

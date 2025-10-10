@@ -9,6 +9,8 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Action Items
 - [ ] Make, test working consumer
+- [ ] 
+- [ ] Protection on VLQs
 - [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
 - [ ] Active segment transition race condition handling
@@ -22,7 +24,24 @@ there will just be a log format and client libraries for producers and consumers
 
 ### 2025-10-08-1
 You _have_ to fix the fact that the consumer and producer have entirely different ways to count bit length. The consumer
-method is probably better, but this is very confusing.
+method is probably better, but this is very confusing. 
+
+Okay - a 'fetch interior' record batch is an 8k or smaller read buffer inside of a fetch. The final round of deserialisation
+is the trickiest and will not only involve the file locking trick below but also something of a lookahead: without some
+ceiling on batches where we round down to the nearest message boundary (and, well maybe even _with_ that) we don't want
+perfectly intact messages on large writes to be discarded just because they fall across a fetch boundary. This means that
+the consumer needs to handle messages across read buffers similarly to messages cut across fetches. If the length and
+CRCs match, then the consumer is free to keep on going. But if it _fails_ the CRC check, then the consumers will need to
+race to zero out the last truncated message of the previous fetch.
+
+If there is a legal message in the first segment of the next fetch, consumers keep doing what they are doing. The 
+nightmare scenario would be fetch _N_ ending with a truncated message, fetch _N+1_ starting with a truncated message 
+followed by legal messages that don't look legal because the truncated message has thrown every length off. _That_ is
+as situation where the messages ending with reverse length would save us, because then consumers could read in reverse
+order until they find the last illegal message and zero it out.
+
+Given that this is theoretically solvable, I am more comfortable saying that an illegal fetch start after an illegal 
+fetch end is irrecoverable.
 
 ### 2025-10-08-0
 While I've done more thinking about incomplete message updates from producers, sitting down to write the consumer 
