@@ -23,10 +23,11 @@ class ConsumerTest {
         val buffer = createRecordBuffer(
             PuroRecord(expectedTopic, expectedKey, expectedValue)
         )
-        val record = getRecord(buffer)
-        assertNotNull(record)
+        val result = getRecord(buffer)
+        assertNotNull(result)
+        assertNotNull(result.first)
 
-        val (actualTopic, actualKey, actualValue) = record
+        val (actualTopic, actualKey, actualValue) = result.first
         assertEquals(expectedTopic, actualTopic)
         assertContentEquals(expectedKey.array(), actualKey.array())
         assertContentEquals(expectedValue.array(), actualValue.array())
@@ -42,10 +43,11 @@ class ConsumerTest {
             PuroRecord(expectedTopic, expectedKey, expectedValue)
         )
 
-        val record = getRecord(buffer)
-        assertNotNull(record)
+        val result = getRecord(buffer)
+        assertNotNull(result)
+        assertNotNull(result.first)
 
-        val (actualTopic, actualKey, actualValue) = record
+        val (actualTopic, actualKey, actualValue) = result.first
         assertEquals(expectedTopic, actualTopic)
         assertContentEquals(expectedKey.array(), actualKey.array())
         assertContentEquals(expectedValue.array(), actualValue.array())

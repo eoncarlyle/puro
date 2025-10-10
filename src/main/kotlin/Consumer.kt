@@ -8,11 +8,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
-fun getRecord(byteBuffer: ByteBuffer): PuroRecord? {
+fun getRecord(byteBuffer: ByteBuffer): Pair<PuroRecord, Int>? {
     if (!byteBuffer.hasRemaining()) {
         return null //Actual result type
     }
-
+    val start = byteBuffer.position()
     val expectedCrc = byteBuffer.get()
     val (encodedTotalLength, _, crc1) = byteBuffer.fromVlq()
     val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
@@ -24,25 +24,21 @@ fun getRecord(byteBuffer: ByteBuffer): PuroRecord? {
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
     return if (expectedCrc == actualCrc) {
-        PuroRecord(topic, key, value)
-    } else null //Actual result type
+        PuroRecord(topic, key, value) to (byteBuffer.position() - start)
+    } else null //TODO Actual result type
 }
 
-private fun allNonNull(
-    lengthData: Triple<Int, Int, Byte>?,
-    topicLengthData: Triple<Int, Int, Byte>?,
-    keyMetadata: Triple<Int, Int, Byte>?,
-) = lengthData != null && topicLengthData != null && keyMetadata != null
-
-
-fun getFetchInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<List<PuroRecord>, Long> {
+fun getRecords(
+    byteBuffer: ByteBuffer,
+    initialOffset: Long,
+    isEndOfFetch: Boolean = false
+): Triple<List<PuroRecord>, Long, Boolean> {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
+    var abnormality = false // Only matters if end-of-fetch
 
     while (byteBuffer.hasRemaining()) {
         val expectedCrc = byteBuffer.get()
-
-        // The naming needs to be cleaned up: this isn't easy to follow
 
         //val (encodedTotalLength, encodedTotalLengthBitCount, crc1) = byteBuffer.fromVlq()
         val lengthData = byteBuffer.readSafety()?.fromVlq()
@@ -89,9 +85,11 @@ fun getFetchInteriorRecords(byteBuffer: ByteBuffer, initialOffset: Long): Pair<L
 
             // These are necessarily 'interior' messages.
             offset += totalLength
+        } else {
+            abnormality = true
         }
     }
-    return Pair(records, offset)
+    return Triple(records, offset, if (isEndOfFetch) abnormality else false)
 }
 
 class PuroConsumer(
@@ -99,8 +97,17 @@ class PuroConsumer(
     val topics: List<String>,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) {
+    companion object {
+        const val BUFFSIZE = 8192
+    }
+
     var activeSegmentPath = getActiveSegmentPath(streamDirectory)
     var consumerOffset = 0L //First byte offset that hasn't been read
+    val readBuffer = ByteBuffer.allocate(BUFFSIZE)
+
+    var abnormalOffsetWindow: Pair<Long, Long>? = null
+
+    fun stopListening() = watcher?.close()
 
     private val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
         .path(streamDirectory)
@@ -108,17 +115,7 @@ class PuroConsumer(
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
                     if (event.path() == activeSegmentPath) {
-                        val producerOffset = Files.size(activeSegmentPath)
-                        withConsumerLock(consumerOffset, producerOffset - consumerOffset) {
-
-                            // TODO: need to do this in testable way
-                            // If we will never get events with events that will cross DirectoryChangeEvent
-                            // boundaries then that makes this much simpler but I don't know how realistic
-                            // that is. If we can't assume that then we'd have to store the truncated message
-                            // fragment alongside the segment offset and then concatenate it with the new poll
-                            // however, telling the difference between a truncated message that will be
-                            // be completed from a permanently errored message may not be really possible
-                        }
+                        onActiveSegmentChange()
                     }
                 }
 
@@ -130,14 +127,100 @@ class PuroConsumer(
         }
         .build()
 
-    fun stopListening() = watcher?.close()
+
+    fun onActiveSegmentChange() {
+        val producerOffset = Files.size(activeSegmentPath)
+        val offsetChange = producerOffset - consumerOffset
+        val records = ArrayList<PuroRecord>()
+
+        val exitCode = withConsumerLock(consumerOffset, offsetChange) { fileChannel ->
+
+            if (abnormalOffsetWindow == null) {
+                standardRead(fileChannel, records, producerOffset, offsetChange)
+            } else {
+                readBuffer.clear()
+                fileChannel.read(readBuffer)
+                readBuffer.flip()
+                // Continuation: clean message divide over a fetch boundary
+                val continuationResult = getRecord(readBuffer)
+                if (continuationResult != null) {
+                    consumerOffset += continuationResult.second
+                    abnormalOffsetWindow = null
+                    val newOffset = producerOffset - consumerOffset
+                    standardRead(fileChannel, records, producerOffset, newOffset)
+                    // No cleanup required
+                    return@withConsumerLock 0
+                } else {
+                    // Hard producer transition: last producer failed, but new messages not interrupted
+                    readBuffer.rewind()
+                    // Off-by-one possibility
+                    // TODO buffer saftey: integer conversions may be an issue
+                    val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
+                    readBuffer.position(bufferOffset + 1)
+
+                    val hardProducerTransitionResult = getRecord(readBuffer)
+
+                    if (hardProducerTransitionResult != null) {
+                        consumerOffset += hardProducerTransitionResult.second
+                        abnormalOffsetWindow = null
+                        // TODO: replace with result type
+                        // The consumer can fix the segment but it needs to relinquish it's shared lock first
+                        return@withConsumerLock 1
+                    } else {
+                        // Failed producer transition
+                        // TODO: replace with result type
+                        return@withConsumerLock -1
+                    }
+                }
+            }
+        }
+
+        // TODO: result type handling
+        if (exitCode == 0) {
+            records.filter { topics.contains(it.topic) }.forEach { onMessage(it) }
+        } else if (exitCode == 1) {
+            onHardProducerTransition()
+        } else {
+            throw RuntimeException("Unexpected exit code $exitCode")
+        }
+    }
+
+    fun onHardProducerTransition() {
+        //TODO: Write a message with a zero'd CRC bit, zero topic and key lengths, with a message length to match the gap
+        //TODO: Re-acquire a read lock and continue on as normal
+    }
+
+    fun getStepCount(offsetDelta: Long) = (if (offsetDelta % BUFFSIZE == 0L) {
+        (offsetDelta / BUFFSIZE)
+    } else {
+        (offsetDelta / BUFFSIZE) + 1
+    }).toInt()
+
 
     fun listen(): Thread {
         return Thread { watcher?.watch() }
     }
 
-    fun onActiveSegmentModifyEvent(producerOffset: Long) {
+    fun standardRead(fileChannel: FileChannel, records: ArrayList<PuroRecord>, producerOffset: Long, offsetChange: Long) {
+        val steps = getStepCount(offsetChange)
+        for (step in 0..<steps) {
+            readBuffer.clear()
+            fileChannel.read(readBuffer)
+            readBuffer.flip()
+            val isLastBatch = (step == steps - 1)
+            val (batchRecords, nextOffset, abnormality) = getRecords(
+                readBuffer,
+                consumerOffset,
+                isEndOfFetch = isLastBatch
+            )
 
+            records.addAll(batchRecords)
+            consumerOffset = nextOffset
+
+            if (isLastBatch && abnormality) {
+                abnormalOffsetWindow = consumerOffset to producerOffset
+            }
+        }
     }
 
     private fun getActiveSegmentChannel(): FileChannel {
@@ -146,7 +229,8 @@ class PuroConsumer(
         return FileChannel.open(activeSegmentPath, StandardOpenOption.READ)
     }
 
-    private fun withConsumerLock(position: Long, size: Long, block: (FileChannel) -> Unit) {
+    // Consumer lock block: returns `false` if end-of-fetch abnormality
+    private fun <T> withConsumerLock(position: Long, size: Long, block: (FileChannel) -> T): T {
         // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
         // the active segment could change.
         // This has been marked on the README as 'Active segment transition race condition handling'
@@ -159,7 +243,7 @@ class PuroConsumer(
                     Thread.sleep(retryDelay) // Should eventually give up
                 }
             } while (lock == null)
-            block(channel)
+            return block(channel)
         }
     }
 }
