@@ -8,9 +8,15 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
-fun getRecord(byteBuffer: ByteBuffer): Pair<PuroRecord, Int>? {
+sealed class ConsumerError() {
+    class NoReminingBuffer : ConsumerError()
+}
+
+typealias ConsumerResult<R> = Either<ConsumerError, R>
+
+fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     if (!byteBuffer.hasRemaining()) {
-        return null //Actual result type
+        return left(ConsumerError.NoReminingBuffer())
     }
     val start = byteBuffer.position()
     val expectedCrc = byteBuffer.get()
@@ -24,8 +30,8 @@ fun getRecord(byteBuffer: ByteBuffer): Pair<PuroRecord, Int>? {
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
     return if (expectedCrc == actualCrc) {
-        PuroRecord(topic, key, value) to (byteBuffer.position() - start)
-    } else null //TODO Actual result type
+        right(PuroRecord(topic, key, value) to (byteBuffer.position() - start))
+    } else left(ConsumerError.NoReminingBuffer())
 }
 
 fun getRecords(
@@ -135,7 +141,7 @@ class PuroConsumer(
 
 
         // TODO: if the lambda is broken out it will be much easier to test
-        val fetchResult= withConsumerLock(consumerOffset, offsetChange) { fileChannel ->
+        val fetchResult = withConsumerLock(consumerOffset, offsetChange) { fileChannel ->
             fetchProcess(fileChannel, records, producerOffset, offsetChange)
         }
 
@@ -144,33 +150,34 @@ class PuroConsumer(
             0 -> {
                 records.filter { topics.contains(it.topic) }.forEach { onMessage(it) }
             }
+
             1 -> {
                 onHardProducerTransition(fetchResult.second, fetchResult.third)
             }
+
             else -> {
                 throw RuntimeException("Unexpected exit code $fetchResult")
             }
         }
     }
 
-    fun fetchProcess(fileChannel: FileChannel, records: ArrayList<PuroRecord>, producerOffset: Long, offsetChange: Long): Triple<Int, Long, Long> {
+    fun fetchProcess(
+        fileChannel: FileChannel,
+        records: ArrayList<PuroRecord>,
+        producerOffset: Long,
+        offsetChange: Long
+    ): ConsumerResult<Triple<Int, Long, Long>> {
         if (abnormalOffsetWindow == null) {
             standardRead(fileChannel, records, producerOffset, offsetChange)
-            return Triple(0, 0L, 0L)
+            return right(Triple(0, 0L, 0L))
         } else {
             readBuffer.clear()
             fileChannel.read(readBuffer)
             readBuffer.flip()
             // Continuation: clean message divide over a fetch boundary
             val continuationResult = getRecord(readBuffer)
-            if (continuationResult != null) {
-                consumerOffset += continuationResult.second
-                abnormalOffsetWindow = null
-                val newOffsetChange = producerOffset - consumerOffset
-                standardRead(fileChannel, records, producerOffset, newOffsetChange)
-                // No cleanup required
-                return Triple(0, 0L, 0L)
-            } else {
+
+            return continuationResult.fold({ result ->
                 // Hard producer transition: last producer failed, but new messages not interrupted
                 readBuffer.rewind()
                 // Off-by-one possibility
@@ -178,22 +185,26 @@ class PuroConsumer(
                 val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
                 readBuffer.position(bufferOffset + 1)
 
-                val hardProducerTransitionResult = getRecord(readBuffer)
-
-                if (hardProducerTransitionResult != null) {
-                    consumerOffset += hardProducerTransitionResult.second
-                    val result = Triple(1, abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
-                    abnormalOffsetWindow = null
-                    val newOffsetChange = producerOffset - consumerOffset
-                    standardRead(fileChannel, records, producerOffset, newOffsetChange)
-                    // TODO: replace with result type
-                    // The consumer can fix the segment but it needs to relinquish it's shared lock first
-                    return result
-                } else {
-                    // Failed producer transition
-                    // TODO: replace with result type
-                    return Triple(-1, 0L, 0L)
-                }
+                return@fold getRecord(readBuffer)
+                    .map { hardProducerTransitionResult ->
+                        consumerOffset += hardProducerTransitionResult.second
+                        val result = Triple(1, abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
+                        abnormalOffsetWindow = null
+                        val newOffsetChange = producerOffset - consumerOffset
+                        standardRead(fileChannel, records, producerOffset, newOffsetChange)
+                        // TODO: replace with result type
+                        // The consumer can fix the segment but it needs to relinquish it's shared lock first
+                        return@map result
+                    }.mapLeft {
+                         Triple(-1, 0L, 0L)
+                    }
+            }) { result ->
+                consumerOffset += result.second
+                abnormalOffsetWindow = null
+                val newOffsetChange = producerOffset - consumerOffset
+                standardRead(fileChannel, records, producerOffset, newOffsetChange)
+                // No cleanup required
+                return@fold Triple(0, 0L, 0L)
             }
         }
     }
@@ -214,7 +225,12 @@ class PuroConsumer(
         return Thread { watcher?.watch() }
     }
 
-    fun standardRead(fileChannel: FileChannel, records: ArrayList<PuroRecord>, producerOffset: Long, offsetChange: Long) {
+    fun standardRead(
+        fileChannel: FileChannel,
+        records: ArrayList<PuroRecord>,
+        producerOffset: Long,
+        offsetChange: Long
+    ) {
         val steps = getStepCount(offsetChange)
         for (step in 0..<steps) {
             readBuffer.clear()

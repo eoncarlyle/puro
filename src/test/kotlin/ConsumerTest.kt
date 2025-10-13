@@ -3,6 +3,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 
 class ConsumerTest {
@@ -24,13 +25,14 @@ class ConsumerTest {
             PuroRecord(expectedTopic, expectedKey, expectedValue)
         )
         val result = getRecord(buffer)
-        assertNotNull(result)
-        assertNotNull(result.first)
+        assertTrue { result.isRight() }
 
-        val (actualTopic, actualKey, actualValue) = result.first
-        assertEquals(expectedTopic, actualTopic)
-        assertContentEquals(expectedKey.array(), actualKey.array())
-        assertContentEquals(expectedValue.array(), actualValue.array())
+        result.map {  result ->
+            val (actualTopic, actualKey, actualValue) = result.first
+            assertEquals(expectedTopic, actualTopic)
+            assertContentEquals(expectedKey.array(), actualKey.array())
+            assertContentEquals(expectedValue.array(), actualValue.array())
+        }
     }
 
     @Test
@@ -44,13 +46,14 @@ class ConsumerTest {
         )
 
         val result = getRecord(buffer)
-        assertNotNull(result)
-        assertNotNull(result.first)
+        assertTrue { result.isRight() }
 
-        val (actualTopic, actualKey, actualValue) = result.first
-        assertEquals(expectedTopic, actualTopic)
-        assertContentEquals(expectedKey.array(), actualKey.array())
-        assertContentEquals(expectedValue.array(), actualValue.array())
+        result.map {  result ->
+            val (actualTopic, actualKey, actualValue) = result.first
+            assertEquals(expectedTopic, actualTopic)
+            assertContentEquals(expectedKey.array(), actualKey.array())
+            assertContentEquals(expectedValue.array(), actualValue.array())
+        }
     }
 
 

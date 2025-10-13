@@ -19,7 +19,7 @@ class DirectoryWatchingUtility(directoryToWatch: Path?, onEvent: (DirectoryChang
     }
 }
 
-fun main() {
+fun direcotry() {
     val path = Path("/tmp/puro/stream0.puro")
     val channel = FileChannel.open(path)
 
@@ -35,4 +35,13 @@ fun main() {
     }
 
     DirectoryWatchingUtility(Path("/tmp/puro"), onEvent).watcher?.watch()
+}
+
+
+fun main() {
+
+    fun a(either: Either<String, Long>): either {
+
+    }
+
 }
