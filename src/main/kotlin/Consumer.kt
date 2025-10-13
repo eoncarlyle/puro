@@ -8,8 +8,14 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
-sealed class ConsumerError() {
+sealed class ConsumerError {
     class NoReminingBuffer : ConsumerError()
+    class HardTransitionFailure : ConsumerError()
+}
+
+sealed class FetchSuccess() {
+    class CleanFetch() : FetchSuccess()
+    class HardTransition(val abnormalOffsetWindowStart: Long, val abnormalOffsetWindowStop: Long) : FetchSuccess()
 }
 
 typealias ConsumerResult<R> = Either<ConsumerError, R>
@@ -72,6 +78,9 @@ fun getRecords(
         } else null
 
         // The else branch isn't advancing the offset because it is possible that this is the next batch
+        // TODO: while the reasoning above is sound, but we now have a baked in assumption that the only time
+        // TODO: ...we will have bad messages is for the outside of fetches. Should throw if this is not the case,
+        // TODO: ...this is now maked as 'Fetch interior failures' in the readme
         if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetdata != null && keyData != null && valueData != null) {
             val (_, encodedTotalLengthBitCount, crc1) = lengthData
             val (topicLength, topicLengthBitCount, crc2) = topicLengthData
@@ -139,37 +148,31 @@ class PuroConsumer(
         val offsetChange = producerOffset - consumerOffset
         val records = ArrayList<PuroRecord>()
 
-
         // TODO: if the lambda is broken out it will be much easier to test
         val fetchResult = withConsumerLock(consumerOffset, offsetChange) { fileChannel ->
-            fetchProcess(fileChannel, records, producerOffset, offsetChange)
+            fetch(fileChannel, records, producerOffset, offsetChange)
         }
 
-        // TODO: result type handling
-        when (fetchResult.first) {
-            0 -> {
-                records.filter { topics.contains(it.topic) }.forEach { onMessage(it) }
+        fetchResult.onRight {
+            when (it) {
+                is FetchSuccess.CleanFetch -> {}
+                is FetchSuccess.HardTransition -> hardTransitionCleanup(it)
             }
-
-            1 -> {
-                onHardProducerTransition(fetchResult.second, fetchResult.third)
-            }
-
-            else -> {
-                throw RuntimeException("Unexpected exit code $fetchResult")
-            }
+        }.onLeft {
+            //TODO an actually acceptable logging message
+            throw RuntimeException(it.toString())
         }
     }
 
-    fun fetchProcess(
+    fun fetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
         producerOffset: Long,
         offsetChange: Long
-    ): ConsumerResult<Triple<Int, Long, Long>> {
+    ): ConsumerResult<FetchSuccess> {
         if (abnormalOffsetWindow == null) {
             standardRead(fileChannel, records, producerOffset, offsetChange)
-            return right(Triple(0, 0L, 0L))
+            return right(FetchSuccess.CleanFetch())
         } else {
             readBuffer.clear()
             fileChannel.read(readBuffer)
@@ -177,39 +180,48 @@ class PuroConsumer(
             // Continuation: clean message divide over a fetch boundary
             val continuationResult = getRecord(readBuffer)
 
-            return continuationResult.fold({ result ->
-                // Hard producer transition: last producer failed, but new messages not interrupted
-                readBuffer.rewind()
-                // Off-by-one possibility
-                // TODO buffer saftey: integer conversions may be an issue
-                val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
-                readBuffer.position(bufferOffset + 1)
+            return continuationResult.fold(
+                ifRight = { result ->
+                    consumerOffset += result.second
+                    abnormalOffsetWindow = null
+                    val newOffsetChange = producerOffset - consumerOffset
+                    standardRead(fileChannel, records, producerOffset, newOffsetChange)
+                    // No cleanup required
+                    right(FetchSuccess.CleanFetch())
+                },
+                ifLeft = {
+                    // Hard producer transition: last producer failed, but new messages not interrupted
+                    readBuffer.rewind()
+                    // Off-by-one possibility
+                    // TODO buffer safety: integer conversions may be an issue
+                    val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
+                    readBuffer.position(bufferOffset + 1)
 
-                return@fold getRecord(readBuffer)
-                    .map { hardProducerTransitionResult ->
-                        consumerOffset += hardProducerTransitionResult.second
-                        val result = Triple(1, abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
-                        abnormalOffsetWindow = null
-                        val newOffsetChange = producerOffset - consumerOffset
-                        standardRead(fileChannel, records, producerOffset, newOffsetChange)
-                        // TODO: replace with result type
-                        // The consumer can fix the segment but it needs to relinquish it's shared lock first
-                        return@map result
-                    }.mapLeft {
-                         Triple(-1, 0L, 0L)
-                    }
-            }) { result ->
-                consumerOffset += result.second
-                abnormalOffsetWindow = null
-                val newOffsetChange = producerOffset - consumerOffset
-                standardRead(fileChannel, records, producerOffset, newOffsetChange)
-                // No cleanup required
-                return@fold Triple(0, 0L, 0L)
-            }
+                    getRecord(readBuffer)
+                        .fold(
+                            ifLeft = {
+                                Either.Left<ConsumerError, FetchSuccess>(ConsumerError.HardTransitionFailure())
+                            },
+                            ifRight = { hardProducerTransitionResult ->
+                                consumerOffset += hardProducerTransitionResult.second
+                                val result = FetchSuccess.HardTransition(
+                                    abnormalOffsetWindow!!.first,
+                                    abnormalOffsetWindow!!.second
+                                )
+                                abnormalOffsetWindow = null
+                                val newOffsetChange = producerOffset - consumerOffset
+                                standardRead(fileChannel, records, producerOffset, newOffsetChange)
+                                // TODO: replace with result type
+                                // The consumer can fix the segment but it needs to relinquish it's shared lock first
+                                right(result)
+                            }
+                        )
+                },
+            )
         }
     }
 
-    fun onHardProducerTransition(start: Long, end: Long) {
+    fun hardTransitionCleanup(transition: FetchSuccess.HardTransition) {
         //TODO: Write a message with a zero'd CRC bit, zero topic and key lengths, with a message length to match the gap
         //TODO: Re-acquire a read lock and continue on as normal
     }

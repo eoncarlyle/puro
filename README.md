@@ -11,11 +11,12 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Make, test working consumers
   - [ ] Fetch process buffer check: I think not all opertaions will work
   - [ ] Event loop
-  - [ ] Consumer result types
+  - [x] Consumer result types
   - [ ] `onHardProducerTransition`
 - [ ] Producer result types
 - [ ] Active segment transition race condition handling
 - [ ] Protection on VLQs
+- [ ] Fetch interior failures
 - [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
 - [ ] Write size ceiling specification (small) 
