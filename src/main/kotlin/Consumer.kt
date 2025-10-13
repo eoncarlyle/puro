@@ -9,6 +9,7 @@ import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 
 sealed class ConsumerError {
+    class FailingCrc : ConsumerError()
     class NoReminingBuffer : ConsumerError()
     class HardTransitionFailure : ConsumerError()
 }
@@ -37,7 +38,7 @@ fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
 
     return if (expectedCrc == actualCrc) {
         right(PuroRecord(topic, key, value) to (byteBuffer.position() - start))
-    } else left(ConsumerError.NoReminingBuffer())
+    } else left(ConsumerError.FailingCrc())
 }
 
 fun getRecords(
