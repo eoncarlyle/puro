@@ -10,7 +10,7 @@ there will just be a log format and client libraries for producers and consumers
 ## Action Items
 - [ ] Make, test working consumers
   - [ ] Fetch process buffer check: I think not all opertaions will work
-  - [ ] Event loop
+  - [x] Event loop
   - [x] Consumer result types
   - [ ] `onHardProducerTransition`
 - [ ] Producer result types
@@ -27,15 +27,19 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Development Log
 
+### 2025-10-12
+The event loop is now constructed. The `onHardProducerTransition` really won't take that long to write but as soon as it
+is written it will be time to do some manual testing on this. Also, the difference between 'read from the beginning' and
+'read new events as they come in' will require setting the offset to zero and placing the current file size onto the 
+queue vs. setting the offset to the current segment file size.
+
 ### 2025-10-10
-If the producers are producing faster than the consumers can consume I think the logic is conpketely broken with the 
+If the producers are producing faster than the consumers can consume I think the logic is completely broken with the 
 callback, so I will need to build some simple event loop and keep track of producer offsets. Also, if the a message was 
 truncated, but we do have the length of the message that gives us a great hint about hard producer resets, and so may be 
 worth keeping. Also, as of the current commit the mechanism for hard producer transition will only work if there is a live consumer. This wouldn't be true if the
 messages had inverted length as the last field, but that can probably wait. There are also no current affordances for controll
 messages.
-
-
 
 ### 2025-10-08-1
 You _have_ to fix the fact that the consumer and producer have entirely different ways to count bit length. The consumer

@@ -7,6 +7,8 @@ import java.nio.channels.FileLock
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.LinkedBlockingQueue
+
 
 sealed class ConsumerError {
     class FailingCrc : ConsumerError()
@@ -44,6 +46,7 @@ fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
 fun getRecords(
     byteBuffer: ByteBuffer,
     initialOffset: Long,
+    listenedTopics: List<String>,
     isEndOfFetch: Boolean = false
 ): Triple<List<PuroRecord>, Long, Boolean> {
     val records = ArrayList<PuroRecord>()
@@ -58,6 +61,8 @@ fun getRecords(
 
         //val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
         val topicLengthData = byteBuffer.readSafety()?.fromVlq()
+
+        //TODO optimisation: as soon as the length and topic are known, skip message if not in `listenedTopics`
 
         //val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
         val topicMetadata = if (topicLengthData != null) {
@@ -95,7 +100,7 @@ fun getRecords(
             val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
             val totalLength = 1 + encodedTotalLengthBitCount + subrecordLength
 
-            if (expectedCrc == actualCrc) {
+            if (expectedCrc == actualCrc && listenedTopics.contains(topic)) {
                 records.add(PuroRecord(topic, key, value))
             }
 
@@ -112,7 +117,7 @@ class PuroConsumer(
     val streamDirectory: Path,
     val topics: List<String>,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
-) {
+) : Runnable {
     companion object {
         const val BUFFSIZE = 8192
     }
@@ -120,10 +125,13 @@ class PuroConsumer(
     var activeSegmentPath = getActiveSegmentPath(streamDirectory)
     var consumerOffset = 0L //First byte offset that hasn't been read
     val readBuffer = ByteBuffer.allocate(BUFFSIZE)
-
     var abnormalOffsetWindow: Pair<Long, Long>? = null
+    var activeSegmentChangeQueue = LinkedBlockingQueue<Long>()
 
-    fun stopListening() = watcher?.close()
+    fun listen(): Thread {
+        return Thread { watcher?.watch() }
+    }
+    //fun stopListening() = watcher?.close()
 
     private val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
         .path(streamDirectory)
@@ -131,7 +139,8 @@ class PuroConsumer(
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
                     if (event.path() == activeSegmentPath) {
-                        onActiveSegmentChange()
+                        //onActiveSegmentChange()
+                        activeSegmentChangeQueue.put(Files.size(activeSegmentPath))
                     }
                 }
 
@@ -144,20 +153,34 @@ class PuroConsumer(
         .build()
 
 
-    fun onActiveSegmentChange() {
-        val producerOffset = Files.size(activeSegmentPath)
-        val offsetChange = producerOffset - consumerOffset
+    override fun run() {
+        Thread { watcher?.watch() }.start()
+        Thread {
+            while (true) {
+                val producerOffset = activeSegmentChangeQueue.take()
+                onActiveSegmentChange(producerOffset)
+            }
+        }.start()
+    }
+
+    fun onActiveSegmentChange(producerOffset: Long) {
         val records = ArrayList<PuroRecord>()
 
         // TODO: if the lambda is broken out it will be much easier to test
-        val fetchResult = withConsumerLock(consumerOffset, offsetChange) { fileChannel ->
-            fetch(fileChannel, records, producerOffset, offsetChange)
+        val fetchResult = withConsumerLock(consumerOffset, producerOffset - consumerOffset) { fileChannel ->
+            fetch(fileChannel, records, producerOffset)
         }
 
         fetchResult.onRight {
             when (it) {
-                is FetchSuccess.CleanFetch -> {}
-                is FetchSuccess.HardTransition -> hardTransitionCleanup(it)
+                is FetchSuccess.CleanFetch -> records.filter { r -> topics.contains(r.topic) }
+                    .forEach { r -> onMessage(r) }
+
+                is FetchSuccess.HardTransition -> {
+                    hardTransitionCleanup(it)
+                    records.filter { r -> topics.contains(r.topic) }
+                        .forEach { r -> onMessage(r) }
+                }
             }
         }.onLeft {
             //TODO an actually acceptable logging message
@@ -168,11 +191,10 @@ class PuroConsumer(
     fun fetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
-        producerOffset: Long,
-        offsetChange: Long
+        producerOffset: Long
     ): ConsumerResult<FetchSuccess> {
         if (abnormalOffsetWindow == null) {
-            standardRead(fileChannel, records, producerOffset, offsetChange)
+            standardRead(fileChannel, records, producerOffset)
             return right(FetchSuccess.CleanFetch())
         } else {
             readBuffer.clear()
@@ -185,8 +207,7 @@ class PuroConsumer(
                 ifRight = { result ->
                     consumerOffset += result.second
                     abnormalOffsetWindow = null
-                    val newOffsetChange = producerOffset - consumerOffset
-                    standardRead(fileChannel, records, producerOffset, newOffsetChange)
+                    standardRead(fileChannel, records, producerOffset)
                     // No cleanup required
                     right(FetchSuccess.CleanFetch())
                 },
@@ -210,8 +231,7 @@ class PuroConsumer(
                                     abnormalOffsetWindow!!.second
                                 )
                                 abnormalOffsetWindow = null
-                                val newOffsetChange = producerOffset - consumerOffset
-                                standardRead(fileChannel, records, producerOffset, newOffsetChange)
+                                standardRead(fileChannel, records, producerOffset)
                                 // TODO: replace with result type
                                 // The consumer can fix the segment but it needs to relinquish it's shared lock first
                                 right(result)
@@ -234,17 +254,12 @@ class PuroConsumer(
     }).toInt()
 
 
-    fun listen(): Thread {
-        return Thread { watcher?.watch() }
-    }
-
     fun standardRead(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
-        producerOffset: Long,
-        offsetChange: Long
+        producerOffset: Long
     ) {
-        val steps = getStepCount(offsetChange)
+        val steps = getStepCount(producerOffset - consumerOffset)
         for (step in 0..<steps) {
             readBuffer.clear()
             fileChannel.read(readBuffer)
@@ -253,6 +268,7 @@ class PuroConsumer(
             val (batchRecords, nextOffset, abnormality) = getRecords(
                 readBuffer,
                 consumerOffset,
+                topics,
                 isEndOfFetch = isLastBatch
             )
 
@@ -288,4 +304,5 @@ class PuroConsumer(
             return block(channel)
         }
     }
+
 }
