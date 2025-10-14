@@ -1,6 +1,7 @@
 import PuroProducer.Companion.retryDelay
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
+import org.slf4j.Logger
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -8,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.LinkedBlockingQueue
+import kotlin.math.log
 
 
 sealed class ConsumerError {
@@ -47,12 +49,14 @@ fun getRecords(
     byteBuffer: ByteBuffer,
     initialOffset: Long,
     listenedTopics: List<String>,
+    logger: Logger,
     isEndOfFetch: Boolean = false
 ): Triple<List<PuroRecord>, Long, Boolean> {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
     var abnormality = false // Only matters if end-of-fetch
 
+    logger.info("Initial offset: $offset, remaining: ${byteBuffer.remaining()}")
     while (byteBuffer.hasRemaining()) {
         val expectedCrc = byteBuffer.get()
 
@@ -110,12 +114,15 @@ fun getRecords(
             abnormality = true
         }
     }
+    logger.info("Final Offset: $offset")
+    logger.info("Records count: ${records.size}")
     return Triple(records, offset, if (isEndOfFetch) abnormality else false)
 }
 
 class PuroConsumer(
     val streamDirectory: Path,
     val topics: List<String>,
+    val logger: Logger,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) : Runnable {
     companion object {
@@ -128,9 +135,6 @@ class PuroConsumer(
     var abnormalOffsetWindow: Pair<Long, Long>? = null
     var activeSegmentChangeQueue = LinkedBlockingQueue<Long>()
 
-    fun listen(): Thread {
-        return Thread { watcher?.watch() }
-    }
     //fun stopListening() = watcher?.close()
 
     private val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
@@ -139,7 +143,6 @@ class PuroConsumer(
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
                     if (event.path() == activeSegmentPath) {
-                        //onActiveSegmentChange()
                         activeSegmentChangeQueue.put(Files.size(activeSegmentPath))
                     }
                 }
@@ -158,9 +161,16 @@ class PuroConsumer(
         Thread {
             while (true) {
                 val producerOffset = activeSegmentChangeQueue.take()
+                logger.info("New producer offset $producerOffset")
                 onActiveSegmentChange(producerOffset)
             }
         }.start()
+    }
+
+    private fun ArrayList<PuroRecord>.onMessages() {
+        //TODO: remove the filter once the getMessage optimisation taken care of?
+        this.filter { r -> topics.contains(r.topic) }
+            .forEach { r -> onMessage(r) }
     }
 
     fun onActiveSegmentChange(producerOffset: Long) {
@@ -173,13 +183,11 @@ class PuroConsumer(
 
         fetchResult.onRight {
             when (it) {
-                is FetchSuccess.CleanFetch -> records.filter { r -> topics.contains(r.topic) }
-                    .forEach { r -> onMessage(r) }
+                is FetchSuccess.CleanFetch -> records.onMessages()
 
                 is FetchSuccess.HardTransition -> {
                     hardTransitionCleanup(it)
-                    records.filter { r -> topics.contains(r.topic) }
-                        .forEach { r -> onMessage(r) }
+                    records.onMessages()
                 }
             }
         }.onLeft {
@@ -232,8 +240,6 @@ class PuroConsumer(
                                 )
                                 abnormalOffsetWindow = null
                                 standardRead(fileChannel, records, producerOffset)
-                                // TODO: replace with result type
-                                // The consumer can fix the segment but it needs to relinquish it's shared lock first
                                 right(result)
                             }
                         )
@@ -245,6 +251,7 @@ class PuroConsumer(
     fun hardTransitionCleanup(transition: FetchSuccess.HardTransition) {
         //TODO: Write a message with a zero'd CRC bit, zero topic and key lengths, with a message length to match the gap
         //TODO: Re-acquire a read lock and continue on as normal
+        //TODO: After the lock is acquired, call a function outside of the class
     }
 
     fun getStepCount(offsetDelta: Long) = (if (offsetDelta % BUFFSIZE == 0L) {
@@ -269,6 +276,7 @@ class PuroConsumer(
                 readBuffer,
                 consumerOffset,
                 topics,
+                logger,
                 isEndOfFetch = isLastBatch
             )
 
@@ -279,6 +287,7 @@ class PuroConsumer(
                 abnormalOffsetWindow = consumerOffset to producerOffset
             }
         }
+        //logger.info("286: consumer offset $consumerOffset, producer offset $producerOffset, $steps")
     }
 
     private fun getActiveSegmentChannel(): FileChannel {
@@ -290,9 +299,9 @@ class PuroConsumer(
     // Consumer lock block: returns `false` if end-of-fetch abnormality
     private fun <T> withConsumerLock(position: Long, size: Long, block: (FileChannel) -> T): T {
         // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
-        // the active segment could change.
-        // This has been marked on the README as 'Active segment transition race condition handling'
-        // Best way may be to read if 'tombstone'
+        // the active segment could change, this has been marked on the README as 'Active segment transition race
+        // condition handling'; Best way may be to read if 'tombstone'
+        //logger.info("position: $position, size: $size")
         getActiveSegmentChannel().use { channel ->
             var lock: FileLock?
             do {
@@ -304,5 +313,4 @@ class PuroConsumer(
             return block(channel)
         }
     }
-
 }

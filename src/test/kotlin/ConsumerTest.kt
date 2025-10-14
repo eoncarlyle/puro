@@ -1,3 +1,4 @@
+import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -81,5 +82,24 @@ class ConsumerTest {
         // This only works because `getRecord` is null if cheksums
         // don't match, if/when result types are used this need
         assertNotNull(getRecord(record))
+    }
+
+    @Test
+    fun `Simple getMessages`() {
+        val recordBuffers = (0..<2).map {
+            createRecordBuffer(PuroRecord(
+                "testTopic", ByteBuffer.wrap(it.toString().toByteArray()),
+                ByteBuffer.wrap(it.toString().hashCode().toString().toByteArray())
+            ))
+        }
+        val consumerBuffer = ByteBuffer.allocate(recordBuffers.sumOf { it.remaining() })
+        recordBuffers.forEach { record -> consumerBuffer.put(record) }
+        consumerBuffer.rewind()
+
+
+        //TODO Uncomment once logger is removed again
+        val records = getRecords(consumerBuffer, 0, listOf("testTopic"), NOPLogger.NOP_LOGGER)
+        assertEquals(2, records.first.size)
+        assertEquals(32L, records.second)
     }
 }

@@ -13,8 +13,9 @@ there will just be a log format and client libraries for producers and consumers
   - [x] Event loop
   - [x] Consumer result types
   - [ ] `onHardProducerTransition`
-- [ ] Producer result types
 - [ ] Active segment transition race condition handling
+- [ ] Control message handling and topic optimisation for consumers
+- [ ] Producer result types
 - [ ] Protection on VLQs
 - [ ] Fetch interior failures
 - [x] Batching producer writes, compare benchmarks
@@ -26,6 +27,17 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-13
+I am 75% sure that the bug is that the consumer does not stop at the incoming consumer offset (there is no current 
+limit set to actually accomplish this), so the consumer will catch up with the state of the file rather than where it 
+was 'supposed' to be for the incoming offset. The only thing that gives me pause is that `b` in the following takes the
+value of 800 which doesn't make sense for the failing final offset of 1120. 
+
+```kotlin
+val a = Path("/tmp/puro/stream0.puro")
+val b = Files.size(a)
+```
 
 ### 2025-10-12
 The event loop is now constructed. The `onHardProducerTransition` really won't take that long to write but as soon as it
