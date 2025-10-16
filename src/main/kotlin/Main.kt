@@ -3,6 +3,7 @@ import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.charset.Charset
 import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.io.path.deleteIfExists
@@ -44,19 +45,22 @@ fun directory() {
 
 fun main() {
     val producer = PuroProducer(Path("/tmp/puro"), 10)
-    var a = 0
     val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), LoggerFactory.getLogger("MainKt")) {
-        //println(Charsets.UTF_8.decode(it.value).toString())
-        a++
-        println(a)
+        val buffer = it.value
+        val byteArray = ByteArray(buffer.remaining()).apply {
+            buffer.get(this)
+        }
+        println(String(byteArray, Charset.defaultCharset()))
     }
     consumer.run()
     Path("/tmp/puro/stream0.puro").deleteIfExists()
+    var a = 0
     repeat(5) {
         val messages = (0..<10).map {
+            a++
             PuroRecord(
-                "testTopic", ByteBuffer.wrap(it.toString().toByteArray()),
-                ByteBuffer.wrap(it.toString().hashCode().toString().toByteArray())
+                "testTopic", a.toVlqEncoding(),
+                ByteBuffer.wrap(a.toString().toByteArray(Charset.defaultCharset())),
             )
         }
         producer.send(messages)

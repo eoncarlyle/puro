@@ -9,7 +9,7 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Action Items
 - [ ] Make, test working consumers
-  - [ ] Fetch process buffer check: I think not all opertaions will work
+  - [x] Fetch process buffer check: I think not all opertaions will work
   - [x] Event loop
   - [x] Consumer result types
   - [ ] `onHardProducerTransition`
@@ -27,6 +27,10 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-15
+While my intuition was correct on the producer offset, the consumer offset was wrong for a symetric reason: my
+intention was to begin at the current consumer offset, but nothing was actually enforcing that in the code.
 
 ### 2025-10-13
 I am 75% sure that the bug is that the consumer does not stop at the incoming consumer offset (there is no current 
