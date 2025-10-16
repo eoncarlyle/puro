@@ -9,7 +9,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.LinkedBlockingQueue
-import kotlin.math.log
 
 
 sealed class ConsumerError {
@@ -48,6 +47,7 @@ fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
 fun getRecords(
     byteBuffer: ByteBuffer,
     initialOffset: Long,
+    finalOffset: Long,
     listenedTopics: List<String>,
     logger: Logger,
     isEndOfFetch: Boolean = false
@@ -55,8 +55,12 @@ fun getRecords(
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
     var abnormality = false // Only matters if end-of-fetch
+    byteBuffer.position(initialOffset.toInt()) //Saftey issue
+    byteBuffer.limit(finalOffset.toInt()) //Saftey issue
+    logger.info("Initial: ${initialOffset}/${finalOffset.toInt()}")
+    logger.info(byteBuffer.remaining().toString())
 
-    logger.info("Initial offset: $offset, remaining: ${byteBuffer.remaining()}")
+    //logger.info("Initial offset: $offset, remaining: ${byteBuffer.remaining()}")
     while (byteBuffer.hasRemaining()) {
         val expectedCrc = byteBuffer.get()
 
@@ -114,8 +118,11 @@ fun getRecords(
             abnormality = true
         }
     }
-    logger.info("Final Offset: $offset")
-    logger.info("Records count: ${records.size}")
+    //logger.info("Final Offset: $offset")
+    //logger.info("Records count: ${records.size}")
+    //val a = finalOffset - initialOffset
+    //val b = offset
+    //logger.info("Final: ${a}/${b}")
     return Triple(records, offset, if (isEndOfFetch) abnormality else false)
 }
 
@@ -161,7 +168,7 @@ class PuroConsumer(
         Thread {
             while (true) {
                 val producerOffset = activeSegmentChangeQueue.take()
-                logger.info("New producer offset $producerOffset")
+                //logger.info("New producer offset $producerOffset")
                 onActiveSegmentChange(producerOffset)
             }
         }.start()
@@ -177,6 +184,7 @@ class PuroConsumer(
         val records = ArrayList<PuroRecord>()
 
         // TODO: if the lambda is broken out it will be much easier to test
+//        logger.info("Consumer offset: $consumerOffset, Producer offset: $producerOffset")
         val fetchResult = withConsumerLock(consumerOffset, producerOffset - consumerOffset) { fileChannel ->
             fetch(fileChannel, records, producerOffset)
         }
@@ -275,6 +283,7 @@ class PuroConsumer(
             val (batchRecords, nextOffset, abnormality) = getRecords(
                 readBuffer,
                 consumerOffset,
+                producerOffset,
                 topics,
                 logger,
                 isEndOfFetch = isLastBatch

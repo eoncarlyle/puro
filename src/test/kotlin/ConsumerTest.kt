@@ -86,7 +86,7 @@ class ConsumerTest {
 
     @Test
     fun `Simple getMessages`() {
-        val recordBuffers = (0..<2).map {
+        val recordBuffers = (0..<4).map {
             createRecordBuffer(PuroRecord(
                 "testTopic", ByteBuffer.wrap(it.toString().toByteArray()),
                 ByteBuffer.wrap(it.toString().hashCode().toString().toByteArray())
@@ -96,10 +96,12 @@ class ConsumerTest {
         recordBuffers.forEach { record -> consumerBuffer.put(record) }
         consumerBuffer.rewind()
 
-
+        val messageSize = 16L
+        val readSize = 32L
         //TODO Uncomment once logger is removed again
-        val records = getRecords(consumerBuffer, 0, listOf("testTopic"), NOPLogger.NOP_LOGGER)
-        assertEquals(2, records.first.size)
-        assertEquals(32L, records.second)
+        val records = getRecords(consumerBuffer, messageSize, readSize, listOf("testTopic"), NOPLogger.NOP_LOGGER)
+        assertEquals(1, records.first.size)
+        assertEquals(readSize, records.second)
+        assertEquals(48, readSize + messageSize) //One remaining message
     }
 }

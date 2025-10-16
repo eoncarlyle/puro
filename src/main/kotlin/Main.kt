@@ -44,8 +44,11 @@ fun directory() {
 
 fun main() {
     val producer = PuroProducer(Path("/tmp/puro"), 10)
+    var a = 0
     val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), LoggerFactory.getLogger("MainKt")) {
         //println(Charsets.UTF_8.decode(it.value).toString())
+        a++
+        println(a)
     }
     consumer.run()
     Path("/tmp/puro/stream0.puro").deleteIfExists()
