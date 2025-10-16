@@ -57,10 +57,7 @@ fun getRecords(
     var abnormality = false // Only matters if end-of-fetch
     byteBuffer.position(initialOffset.toInt()) //Saftey issue
     byteBuffer.limit(finalOffset.toInt()) //Saftey issue
-    logger.info("Initial: ${initialOffset}/${finalOffset.toInt()}")
-    logger.info(byteBuffer.remaining().toString())
 
-    //logger.info("Initial offset: $offset, remaining: ${byteBuffer.remaining()}")
     while (byteBuffer.hasRemaining()) {
         val expectedCrc = byteBuffer.get()
 
@@ -118,11 +115,7 @@ fun getRecords(
             abnormality = true
         }
     }
-    //logger.info("Final Offset: $offset")
-    //logger.info("Records count: ${records.size}")
-    //val a = finalOffset - initialOffset
-    //val b = offset
-    //logger.info("Final: ${a}/${b}")
+
     return Triple(records, offset, if (isEndOfFetch) abnormality else false)
 }
 
@@ -168,7 +161,6 @@ class PuroConsumer(
         Thread {
             while (true) {
                 val producerOffset = activeSegmentChangeQueue.take()
-                //logger.info("New producer offset $producerOffset")
                 onActiveSegmentChange(producerOffset)
             }
         }.start()
@@ -184,7 +176,6 @@ class PuroConsumer(
         val records = ArrayList<PuroRecord>()
 
         // TODO: if the lambda is broken out it will be much easier to test
-//        logger.info("Consumer offset: $consumerOffset, Producer offset: $producerOffset")
         val fetchResult = withConsumerLock(consumerOffset, producerOffset - consumerOffset) { fileChannel ->
             fetch(fileChannel, records, producerOffset)
         }
@@ -296,7 +287,6 @@ class PuroConsumer(
                 abnormalOffsetWindow = consumerOffset to producerOffset
             }
         }
-        //logger.info("286: consumer offset $consumerOffset, producer offset $producerOffset, $steps")
     }
 
     private fun getActiveSegmentChannel(): FileChannel {
@@ -310,7 +300,6 @@ class PuroConsumer(
         // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
         // the active segment could change, this has been marked on the README as 'Active segment transition race
         // condition handling'; Best way may be to read if 'tombstone'
-        //logger.info("position: $position, size: $size")
         getActiveSegmentChannel().use { channel ->
             var lock: FileLock?
             do {
