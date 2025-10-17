@@ -32,10 +32,10 @@ fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     val expectedCrc = byteBuffer.get()
     val (encodedTotalLength, _, crc1) = byteBuffer.fromVlq()
     val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
-    val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
+    val (topic, crc3) = byteBuffer.getArraySlice(topicLength)
     val (keyLength, keyLengthBitCount, crc4) = byteBuffer.fromVlq()
-    val (key, crc5) = byteBuffer.getSubsequence(keyLength)
-    val (value, crc6) = byteBuffer.getSubsequence(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
+    val (key, crc5) = byteBuffer.getBufferSlice(keyLength)
+    val (value, crc6) = byteBuffer.getBufferSlice(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
 
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
@@ -48,7 +48,7 @@ fun getRecords(
     byteBuffer: ByteBuffer,
     initialOffset: Long,
     finalOffset: Long,
-    listenedTopics: List<String>,
+    listenedTopics: List<ByteArray>,
     logger: Logger,
     isEndOfFetch: Boolean = false
 ): Triple<List<PuroRecord>, Long, Boolean> {
@@ -71,21 +71,30 @@ fun getRecords(
 
         //val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
         val topicMetadata = if (topicLengthData != null) {
-            byteBuffer.readSafety()?.getEncodedString(topicLengthData.first)
+            byteBuffer.readSafety()?.getArraySlice(topicLengthData.first)
         } else null
+
+
+        //TODO: Subject this to microbenchmarks, not sure if this actually matters
+        if (topicMetadata == null || listenedTopics.contains(topicMetadata.first)) {
+            if (lengthData != null && (1 + lengthData.second + lengthData.first) <= byteBuffer.remaining()) {
+                offset += (1 + lengthData.second + lengthData.first)
+                continue
+            }
+        }
 
         //val (keyLength, keyLengthBitCount, crc4) = byteBuffer.fromVlq()
         val keyMetdata = byteBuffer.readSafety()?.fromVlq()
 
         // val (key, crc5) = byteBuffer.getSubsequence(keyLength)
         val keyData = if (keyMetdata != null) {
-            byteBuffer.readSafety()?.getSubsequence(keyMetdata.first)
+            byteBuffer.readSafety()?.getBufferSlice(keyMetdata.first)
         } else null
 
         // val (value, crc6) = byteBuffer.getSubsequence(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
         val valueData = if (lengthData != null && topicLengthData != null && keyMetdata != null) {
             byteBuffer.readSafety()
-                ?.getSubsequence(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetdata.second - keyMetdata.first)
+                ?.getBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetdata.second - keyMetdata.first)
         } else null
 
         // The else branch isn't advancing the offset because it is possible that this is the next batch
@@ -93,7 +102,7 @@ fun getRecords(
         // TODO: ...we will have bad messages is for the outside of fetches. Should throw if this is not the case,
         // TODO: ...this is now maked as 'Fetch interior failures' in the readme
         if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetdata != null && keyData != null && valueData != null) {
-            val (_, encodedTotalLengthBitCount, crc1) = lengthData
+            val (subrecordLength, encodedTotalLengthBitCount, crc1) = lengthData
             val (topicLength, topicLengthBitCount, crc2) = topicLengthData
             val (topic, crc3) = topicMetadata
             val (keyLength, keyLengthBitCount, crc4) = keyMetdata
@@ -102,10 +111,11 @@ fun getRecords(
 
             val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
-            val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
+            // Equivalent to:
+            //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
             val totalLength = 1 + encodedTotalLengthBitCount + subrecordLength
 
-            if (expectedCrc == actualCrc && listenedTopics.contains(topic)) {
+            if (expectedCrc == actualCrc && listenedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
             }
 
@@ -121,7 +131,7 @@ fun getRecords(
 
 class PuroConsumer(
     val streamDirectory: Path,
-    val topics: List<String>,
+    val topics: List<ByteArray>,
     val logger: Logger,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) : Runnable {

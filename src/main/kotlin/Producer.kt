@@ -7,12 +7,6 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 import kotlin.math.min
 
-data class PuroRecord(
-    val topic: String,
-    val key: ByteBuffer,
-    val value: ByteBuffer,
-)
-
 data class ProtoPuroRecord(
     val messageCrc: Byte,
     val encodedTotalLength: ByteBuffer,
@@ -30,8 +24,7 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     rewindAll(key, value)
 
     // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
-    val encodedTopic = topic.encodeToByteArray()
-    val topicLength = encodedTopic.size
+    val topicLength = topic.size
     val encodedTopicLength = topicLength.toVlqEncoding()
     val keyLength = key.capacity()
     val encodedKeyLength = keyLength.toVlqEncoding()
@@ -47,14 +40,14 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val messageCrc = getMessageCrc(
         encodedTotalLength = encodedTotalLength,
         encodedTopicLength = encodedTopicLength,
-        encodedTopic = encodedTopic,
+        topic = topic,
         encodedKeyLength = encodedKeyLength,
         key = key,
         value = value
     )
     rewindAll(encodedTotalLength, encodedTopicLength, encodedKeyLength, key, value)
 
-    recordBuffer.put(messageCrc).put(encodedTotalLength).put(encodedTopicLength).put(encodedTopic)
+    recordBuffer.put(messageCrc).put(encodedTotalLength).put(encodedTopicLength).put(topic)
         .put(encodedKeyLength).put(key).put(value)
 
     return recordBuffer.rewind()
@@ -69,8 +62,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
         rewindAll(key, value)
 
         // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
-        val encodedTopic = topic.encodeToByteArray()
-        val topicLength = encodedTopic.size
+        val topicLength = topic.size
         val encodedTopicLength = topicLength.toVlqEncoding()
         val keyLength = key.capacity()
         val encodedKeyLength = keyLength.toVlqEncoding()
@@ -87,7 +79,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
         val messageCrc = getMessageCrc(
             encodedTotalLength = encodedTotalLength,
             encodedTopicLength = encodedTopicLength,
-            encodedTopic = encodedTopic,
+            topic = topic,
             encodedKeyLength = encodedKeyLength,
             key = key,
             value = value
@@ -99,7 +91,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
             messageCrc,
             encodedTotalLength,
             encodedTopicLength,
-            encodedTopic,
+            topic,
             encodedKeyLength,
             key,
             value
@@ -128,14 +120,14 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
 fun getMessageCrc(
     encodedTotalLength: ByteBuffer,
     encodedTopicLength: ByteBuffer,
-    encodedTopic: ByteArray,
+    topic: ByteArray,
     encodedKeyLength: ByteBuffer,
     key: ByteBuffer,
     value: ByteBuffer,
 ): Byte =
     crc8(encodedTotalLength) //TODO get on same page about using buffers here - concerned of `ByteBuffer#array` cost
         .withCrc8(encodedTopicLength)
-        .withCrc8(encodedTopic)
+        .withCrc8(topic)
         .withCrc8(encodedKeyLength)
         .withCrc8(key)
         .withCrc8(value)

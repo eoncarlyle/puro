@@ -10,7 +10,7 @@ class ProducerTest {
     fun `Short message conversion`() {
         val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
         val value = ByteBuffer.wrap(byteArrayOf(0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte()))
-        val record = createRecordBuffer(PuroRecord("testtopic", key, value))
+        val record = createRecordBuffer(PuroRecord("testtopic".toByteArray(), key, value))
 
         assertContentEquals(
             byteArrayOf(
@@ -42,7 +42,7 @@ class ProducerTest {
     @Test
     fun `Round byte buffer batching`() {
         val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
-        val puroRecords = (0..<9).map { PuroRecord("testtopic", key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
+        val puroRecords = (0..<9).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
         val producer = PuroProducer(Path("/tmp"), 3)
@@ -54,7 +54,7 @@ class ProducerTest {
     @Test
     fun `Non-round byte buffer batching`() {
         val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
-        val puroRecords = (0..<10).map { PuroRecord("testtopic", key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
+        val puroRecords = (0..<10).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
         val producer = PuroProducer(Path("/tmp"), 3)

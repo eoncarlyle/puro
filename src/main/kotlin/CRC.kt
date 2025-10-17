@@ -45,7 +45,7 @@ fun crc8(buffer: ByteBuffer): Byte {
 
 fun updateCrc8(crc: Byte, value: Byte): Byte = sht75CrcTable[(value.toInt() xor crc.toInt()) and 0xFF]
 
-fun Byte.withCrc8(value: ByteArray): Byte = updateCrc8(this, crc8(value))
+fun Byte.withCrc8(array: ByteArray): Byte = updateCrc8(this, crc8(array))
 
 fun Byte.withCrc8(buffer: ByteBuffer): Byte = updateCrc8(this, crc8(buffer))
 

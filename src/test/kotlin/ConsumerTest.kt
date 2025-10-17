@@ -10,8 +10,8 @@ import kotlin.test.assertTrue
 class ConsumerTest {
     @Test
     fun `Happy Path getRecord`() {
-        val expectedTopic = "country-codes"
-        val expectedKey = ByteBuffer.wrap("usa2025".toByteArray())
+        val expectedTopic = "country-codes".toByteArray()
+        val expectedKey = "usa2025".toByteBuffer()
         val expectedValue = ByteBuffer.wrap("""
             {
                 "id": 233,
@@ -30,7 +30,7 @@ class ConsumerTest {
 
         result.map {  result ->
             val (actualTopic, actualKey, actualValue) = result.first
-            assertEquals(expectedTopic, actualTopic)
+            assertContentEquals(expectedTopic, actualTopic)
             assertContentEquals(expectedKey.array(), actualKey.array())
             assertContentEquals(expectedValue.array(), actualValue.array())
         }
@@ -38,7 +38,7 @@ class ConsumerTest {
 
     @Test
     fun `Zero Message getRecord`() {
-        val expectedTopic = ""
+        val expectedTopic = "".toByteArray()
         val expectedKey = ByteBuffer.allocate(0)
         val expectedValue = ByteBuffer.allocate(0)
 
@@ -51,7 +51,7 @@ class ConsumerTest {
 
         result.map {  result ->
             val (actualTopic, actualKey, actualValue) = result.first
-            assertEquals(expectedTopic, actualTopic)
+            assertContentEquals(expectedTopic, actualTopic)
             assertContentEquals(expectedKey.array(), actualKey.array())
             assertContentEquals(expectedValue.array(), actualValue.array())
         }
@@ -75,7 +75,7 @@ class ConsumerTest {
             ba49a62c0f4b625ad3fd8359abbdfda8f595b92ccba10a7db986ada75515509b
             d432295b714a41282c22987060b676d4cd4845c5547dcbb942de889c3da47d07
             760218082c9de4b20662e817adc89ac881876c4bdb80c7204206658d50f6bb8b
-        """.trimIndent()
+        """.trimIndent().toByteArray()
         val record = createRecordBuffer(PuroRecord(topicName, key, value))
 
 
@@ -88,7 +88,7 @@ class ConsumerTest {
     fun `Simple getMessages`() {
         val recordBuffers = (0..<4).map {
             createRecordBuffer(PuroRecord(
-                "testTopic", ByteBuffer.wrap(it.toString().toByteArray()),
+                "testTopic".toByteArray(), ByteBuffer.wrap(it.toString().toByteArray()),
                 ByteBuffer.wrap(it.toString().hashCode().toString().toByteArray())
             ))
         }
@@ -99,7 +99,7 @@ class ConsumerTest {
         val messageSize = 16L
         val readSize = 32L
         //TODO Uncomment once logger is removed again
-        val records = getRecords(consumerBuffer, messageSize, readSize, listOf("testTopic"), NOPLogger.NOP_LOGGER)
+        val records = getRecords(consumerBuffer, messageSize, readSize, listOf("testTopic".toByteArray()), NOPLogger.NOP_LOGGER)
         assertEquals(1, records.first.size)
         assertEquals(readSize, records.second)
         assertEquals(48, readSize + messageSize) //One remaining message

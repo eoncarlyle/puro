@@ -44,8 +44,9 @@ fun directory() {
 
 
 fun main() {
+    val topic = "testTopic".toByteArray()
     val producer = PuroProducer(Path("/tmp/puro"), 10)
-    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), LoggerFactory.getLogger("MainKt")) {
+    val consumer = PuroConsumer(Path("/tmp/puro"), listOf(topic), LoggerFactory.getLogger("MainKt")) {
         val buffer = it.value
         val byteArray = ByteArray(buffer.remaining()).apply {
             buffer.get(this)
@@ -59,8 +60,8 @@ fun main() {
         val messages = (0..<10).map {
             a++
             PuroRecord(
-                "testTopic", a.toVlqEncoding(),
-                ByteBuffer.wrap(a.toString().toByteArray(Charset.defaultCharset())),
+                topic, a.toVlqEncoding(),
+                a.toString().toByteBuffer()
             )
         }
         producer.send(messages)

@@ -13,8 +13,8 @@ there will just be a log format and client libraries for producers and consumers
   - [x] Event loop
   - [x] Consumer result types
   - [ ] `onHardProducerTransition`
-- [ ] Active segment transition race condition handling
 - [ ] Control message handling and topic optimisation for consumers
+- [ ] Active segment transition race condition handling
 - [ ] Producer result types
 - [ ] Protection on VLQs
 - [ ] Fetch interior failures
@@ -27,6 +27,10 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-16
+'Total length' and 'subrecord length' are actually equivalent but 'subrecord length' (the length of everything other 
+than crc, the 'total length' field itself, and reverse-encoded length) is more accurate to describe what 
 
 ### 2025-10-15
 While my intuition was correct on the producer offset, the consumer offset was wrong for a symetric reason: my
@@ -138,7 +142,7 @@ topic: byte[]
 keyLength: varint
 key: byte[]
 value: byte[]
-invertedTotalLength: inverted varint
+invertedTotalLength: inverted varint (not yet implemented)
 ```
 
 This all seems clever - but it only works for intact messages so that's kinda moot. I don't love the idea of adding 
@@ -298,7 +302,6 @@ key: byte[]
 value: byte[]
 ```
 
-I needed a word for it so the 
 
 The CRC covers the entire rest of the message. Message length computed from total, topic, and key lengths.
 I am not super confident in the 'what happens if the write is incomplete' which makes me think that an index in the directory makes sense

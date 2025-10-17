@@ -1,8 +1,5 @@
 import Either.Left
 import Either.Right
-import kotlin.also
-import kotlin.contracts.InvocationKind
-import kotlin.contracts.contract
 
 // Directly copied from Arrow
 sealed class Either<out A, out B> {

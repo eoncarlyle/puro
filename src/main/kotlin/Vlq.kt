@@ -57,9 +57,15 @@ fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
     return String(array) to crc8(array)
 }
 
-fun ByteBuffer.getSubsequence(length: Int): Pair<ByteBuffer, Byte> {
+fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
     val array = ByteArray(length)
     this.get(array, 0, array.size)
     // Be wary of this wrap - may be costly
     return ByteBuffer.wrap(array) to crc8(array)
+}
+
+fun ByteBuffer.getArraySlice(length: Int): Pair<ByteArray, Byte> {
+    val array = ByteArray(length)
+    this.get(array, 0, array.size)
+    return array to crc8(array)
 }
