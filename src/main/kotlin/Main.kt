@@ -1,5 +1,6 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
+import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -44,17 +45,18 @@ fun directory() {
 
 
 fun main() {
+    Path("/tmp/puro/segment0.puro").deleteIfExists()
     val topic = "testTopic".toByteArray()
     val producer = PuroProducer(Path("/tmp/puro"), 10)
-    val consumer = PuroConsumer(Path("/tmp/puro"), listOf(topic), LoggerFactory.getLogger("MainKt")) {
+    val logger = LoggerFactory.getLogger("MainKt")
+    val consumer = PuroConsumer(Path("/tmp/puro"), listOf(topic), logger) {
         val buffer = it.value
         val byteArray = ByteArray(buffer.remaining()).apply {
             buffer.get(this)
         }
-        println(String(byteArray, Charset.defaultCharset()))
+        logger.info (String(byteArray, Charset.defaultCharset()))
     }
     consumer.run()
-    Path("/tmp/puro/stream0.puro").deleteIfExists()
     var a = 0
     repeat(5) {
         val messages = (0..<10).map {

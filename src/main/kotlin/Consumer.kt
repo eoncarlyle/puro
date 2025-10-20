@@ -76,7 +76,7 @@ fun getRecords(
 
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
-        if (topicMetadata == null || listenedTopics.contains(topicMetadata.first)) {
+        if (topicMetadata == null || !listenedTopics.any { it.contentEquals(topicMetadata.first) }) {
             if (lengthData != null && (1 + lengthData.second + lengthData.first) <= byteBuffer.remaining()) {
                 offset += (1 + lengthData.second + lengthData.first)
                 continue
@@ -139,7 +139,7 @@ class PuroConsumer(
         const val BUFFSIZE = 8192
     }
 
-    var activeSegmentPath = getActiveSegmentPath(streamDirectory)
+    var observedActiveSegment = getActiveSegment(streamDirectory)
     var consumerOffset = 0L //First byte offset that hasn't been read
     val readBuffer = ByteBuffer.allocate(BUFFSIZE)
     var abnormalOffsetWindow: Pair<Long, Long>? = null
@@ -152,8 +152,8 @@ class PuroConsumer(
         .listener { event: DirectoryChangeEvent ->
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
-                    if (event.path() == activeSegmentPath) {
-                        activeSegmentChangeQueue.put(Files.size(activeSegmentPath))
+                    if (event.path() == observedActiveSegment) {
+                        activeSegmentChangeQueue.put(Files.size(observedActiveSegment))
                     }
                 }
 
@@ -177,7 +177,7 @@ class PuroConsumer(
 
     private fun ArrayList<PuroRecord>.onMessages() {
         //TODO: remove the filter once the getMessage optimisation taken care of?
-        this.filter { r -> topics.contains(r.topic) }
+        this.filter { r -> topics.any { it.contentEquals(r.topic) } }
             .forEach { r -> onMessage(r) }
     }
 
@@ -300,15 +300,12 @@ class PuroConsumer(
 
     private fun getActiveSegmentChannel(): FileChannel {
         // Setting this as a side effect, not super jazzed about this
-        activeSegmentPath = getActiveSegmentPath(streamDirectory)
-        return FileChannel.open(activeSegmentPath, StandardOpenOption.READ)
+        observedActiveSegment = getActiveSegment(streamDirectory)
+        return FileChannel.open(observedActiveSegment, StandardOpenOption.READ)
     }
 
     // Consumer lock block: returns `false` if end-of-fetch abnormality
     private fun <T> withConsumerLock(position: Long, size: Long, block: (FileChannel) -> T): T {
-        // There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
-        // the active segment could change, this has been marked on the README as 'Active segment transition race
-        // condition handling'; Best way may be to read if 'tombstone'
         getActiveSegmentChannel().use { channel ->
             var lock: FileLock?
             do {

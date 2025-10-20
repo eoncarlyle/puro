@@ -197,7 +197,7 @@ class PuroProducer(
         // the active segment could change.
         // This has been marked on the README as 'Active segment transition race condition handling'
         // Best way may be to read if 'tombstone'
-        FileChannel.open(getActiveSegmentPath(streamDirectory), StandardOpenOption.APPEND).use { channel ->
+        FileChannel.open(getActiveSegment(streamDirectory), StandardOpenOption.APPEND).use { channel ->
             val fileSize = channel.size()
             var lock: FileLock?
             do {
