@@ -165,7 +165,6 @@ class PuroConsumer(
         }
         .build()
 
-
     override fun run() {
         Thread { watcher?.watch() }.start()
         Thread {

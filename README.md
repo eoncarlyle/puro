@@ -13,6 +13,8 @@ there will just be a log format and client libraries for producers and consumers
   - [x] Event loop
   - [x] Consumer result types
   - [ ] `onHardProducerTransition`
+- [ ] Active segment transition race condition handling
+- [ ] Consumer and producer builders that prevent single-byte topics
 - [ ] Control message handling and topic optimisation for consumers
 - [ ] Active segment transition race condition handling
 - [ ] Producer result types
@@ -302,6 +304,7 @@ key: byte[]
 value: byte[]
 ```
 
+I needed a word for it so the 
 
 The CRC covers the entire rest of the message. Message length computed from total, topic, and key lengths.
 I am not super confident in the 'what happens if the write is incomplete' which makes me think that an index in the directory makes sense
