@@ -7,7 +7,7 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 import kotlin.math.min
 
-data class ProtoPuroRecord(
+private data class SerialisedPuroRecord(
     val messageCrc: Byte,
     val encodedTotalLength: ByteBuffer,
     val encodedTopicLength: ByteBuffer,
@@ -54,7 +54,7 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
 }
 
 fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
-    val protoRecords = Array<ProtoPuroRecord?>(puroRecords.size) { null }
+    val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size) { null }
     var batchLength = 0
 
     puroRecords.forEachIndexed { index, record ->
@@ -87,7 +87,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
 
         rewindAll(encodedTotalLength, encodedTopicLength, encodedKeyLength, key, value)
 
-        protoRecords[index] = ProtoPuroRecord(
+        protoRecords[index] = SerialisedPuroRecord(
             messageCrc,
             encodedTotalLength,
             encodedTopicLength,
@@ -100,7 +100,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
 
     val batchBuffer = ByteBuffer.allocate(batchLength)
 
-    protoRecords.forEach { record: ProtoPuroRecord? ->
+    protoRecords.forEach { record: SerialisedPuroRecord? ->
 
         val (messageCrc,
             encodedTotalLength,

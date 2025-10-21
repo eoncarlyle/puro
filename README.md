@@ -14,7 +14,9 @@ there will just be a log format and client libraries for producers and consumers
     - [x] Fetch process buffer check: I think not all opertaions will work
     - [x] Event loop
     - [x] Consumer result types
+    - [ ] Final message cleanup
     - [ ] `onHardProducerTransition`
+    - [ ] `onConsumedSegmentTransition`
 - [ ] Active segment transition race condition handling
 - [ ] Consumer and producer builders that prevent single-byte topics
 - [ ] Control message handling and topic optimisation for consumers
@@ -31,6 +33,28 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-20
+The consumer's current segment is not always the active segment, so I am now calling the currently consumed segment just
+the 'consumed segment'.
+
+Now that we have the segment tombstones, I need to consider how to best handle setting `currentConsumerLocked`. These, I
+think, should be handled in a similar way to the `FetchSuccess.HardTransition`. Even if there is nothing to 'clean' up,
+there still need to be actions taken. We also need to handle the case where further messages are placed after a 
+tombstone and re-tombstoning it (probably checking first to make sure another consumer hasn't done the same, using the 
+same 'fixed control message size' trick. Any messages between tombstones are illegal but I don't feel the need to
+zero them out unlike hard transitions where it really matters.
+
+I'm going to sleep on it, but I think it will look like:
+
+```kotlin
+sealed class FetchSuccess() {
+    class CleanFetch() : FetchSuccess()
+    class CleanFinish() : FetchSuccess()
+    class SimpleRecordsAfterTombstone() : FetchSuccess()
+    class HardTransition(val abnormalOffsetWindowStart: Long, val abnormalOffsetWindowStop: Long, val recordsAfterTombstone: Bool) : FetchSuccess()
+}
+```
 
 ### 2025-10-19
 

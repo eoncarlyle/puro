@@ -6,7 +6,6 @@ import org.openjdk.jmh.annotations.*
 import kotlinx.serialization.json.Json
 import org.openjdk.jmh.infra.Blackhole
 import toByteBuffer
-import java.nio.ByteBuffer
 import java.nio.file.Files
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.Path
@@ -36,7 +35,7 @@ open class PuroProducerBenchmark {
 
         records = Json.decodeFromString<Map<String, FlagData>>(flagsJson).map { (key, value) ->
             PuroRecord(
-                "flags".toByteBuffer(),
+                "flags",
                 key.toByteBuffer(),
                 value.toString().toByteBuffer(),
             )

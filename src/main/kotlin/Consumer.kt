@@ -8,7 +8,7 @@ import java.nio.channels.FileLock
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.PriorityBlockingQueue
 
 
 sealed class ConsumerError {
@@ -48,7 +48,7 @@ fun getRecords(
     byteBuffer: ByteBuffer,
     initialOffset: Long,
     finalOffset: Long,
-    listenedTopics: List<ByteArray>,
+    topics: List<ByteArray>,
     logger: Logger,
     isEndOfFetch: Boolean = false
 ): Triple<List<PuroRecord>, Long, Boolean> {
@@ -76,7 +76,7 @@ fun getRecords(
 
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
-        if (topicMetadata == null || !listenedTopics.any { it.contentEquals(topicMetadata.first) }) {
+        if (topicMetadata == null || !topics.any { it.contentEquals(topicMetadata.first) }) {
             if (lengthData != null && (1 + lengthData.second + lengthData.first) <= byteBuffer.remaining()) {
                 offset += (1 + lengthData.second + lengthData.first)
                 continue
@@ -115,7 +115,7 @@ fun getRecords(
             //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
             val totalLength = 1 + encodedTotalLengthBitCount + subrecordLength
 
-            if (expectedCrc == actualCrc && listenedTopics.any { it.contentEquals(topic) }) {
+            if (expectedCrc == actualCrc && topics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
             }
 
@@ -130,20 +130,34 @@ fun getRecords(
 }
 
 class PuroConsumer(
-    val streamDirectory: Path,
-    val topics: List<ByteArray>,
+    streamDirectory: Path,
+    subscribedTopics: List<String>,
     val logger: Logger,
+    val buffsize: Int = 8192,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) : Runnable {
-    companion object {
-        const val BUFFSIZE = 8192
-    }
-
-    var observedActiveSegment = getActiveSegment(streamDirectory)
+    //TODO make this configurable:
+    var consumedSegment = getActiveSegment(streamDirectory)
     var consumerOffset = 0L //First byte offset that hasn't been read
-    val readBuffer = ByteBuffer.allocate(BUFFSIZE)
+    val readBuffer = ByteBuffer.allocate(buffsize)
     var abnormalOffsetWindow: Pair<Long, Long>? = null
-    var activeSegmentChangeQueue = LinkedBlockingQueue<Long>()
+    var currentConsumerLocked = false
+
+    // PriorityBlockingQueue javadoc:
+    // "Operations on this class make no guarantees about the ordering of elements with equal priority.
+    // If you need to enforce an ordering, you can define custom classes or comparators that use a secondary key to
+    // break ties in primary priority values"
+    val compareConsumerSegmentPair =
+        Comparator<ConsumerSegmentEvent> { p1, p2 ->
+            return@Comparator (if (p1.segmentOrder != p2.segmentOrder) {
+                p1.segmentOrder - p2.segmentOrder
+            } else {
+                (p1.offset - p2.offset).toInt()
+            })
+        }
+
+    var segmentChangeQueue = PriorityBlockingQueue(0, compareConsumerSegmentPair)
+    var topics = subscribedTopics.map { it.toByteArray() }
 
     //fun stopListening() = watcher?.close()
 
@@ -152,8 +166,16 @@ class PuroConsumer(
         .listener { event: DirectoryChangeEvent ->
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
-                    if (event.path() == observedActiveSegment) {
-                        activeSegmentChangeQueue.put(Files.size(observedActiveSegment))
+                    //TODO cache this, no reason to recompute
+                    val currentSegmentOrder = getSegmentOrder(consumedSegment)
+                    val incomingSegmentOrder = getSegmentOrder(event.path())
+
+                    if (event.path() == consumedSegment) {
+                        segmentChangeQueue.offer(ConsumerSegmentEvent(Files.size(consumedSegment), currentSegmentOrder))
+                    } else if (incomingSegmentOrder > currentSegmentOrder) {
+                        segmentChangeQueue.offer(ConsumerSegmentEvent(-1, incomingSegmentOrder))
+                    } else {
+                        logger.warn("Modify event for non-consumed path ${event.path()} recorded, possible damaged data integrity")
                     }
                 }
 
@@ -169,8 +191,14 @@ class PuroConsumer(
         Thread { watcher?.watch() }.start()
         Thread {
             while (true) {
-                val producerOffset = activeSegmentChangeQueue.take()
-                onActiveSegmentChange(producerOffset)
+                val (producerOffset) = segmentChangeQueue.take()
+                // TODO the magic value of a zero consumer offset is kinda lame, would
+                // TODO it be better to handle a null instead?
+                if (producerOffset > 0) {
+                    onConsumedSegmentAppend(producerOffset)
+                } else {
+                    onConsumedSegmentTransition()
+                }
             }
         }.start()
     }
@@ -181,7 +209,7 @@ class PuroConsumer(
             .forEach { r -> onMessage(r) }
     }
 
-    fun onActiveSegmentChange(producerOffset: Long) {
+    fun onConsumedSegmentAppend(producerOffset: Long) {
         val records = ArrayList<PuroRecord>()
 
         // TODO: if the lambda is broken out it will be much easier to test
@@ -202,6 +230,10 @@ class PuroConsumer(
             //TODO an actually acceptable logging message
             throw RuntimeException(it.toString())
         }
+    }
+
+    fun onConsumedSegmentTransition() {
+        //TODO
     }
 
     fun fetch(
@@ -262,10 +294,10 @@ class PuroConsumer(
         //TODO: After the lock is acquired, call a function outside of the class
     }
 
-    fun getStepCount(offsetDelta: Long) = (if (offsetDelta % BUFFSIZE == 0L) {
-        (offsetDelta / BUFFSIZE)
+    fun getStepCount(offsetDelta: Long) = (if (offsetDelta % buffsize == 0L) {
+        (offsetDelta / buffsize)
     } else {
-        (offsetDelta / BUFFSIZE) + 1
+        (offsetDelta / buffsize) + 1
     }).toInt()
 
 
@@ -300,8 +332,8 @@ class PuroConsumer(
 
     private fun getActiveSegmentChannel(): FileChannel {
         // Setting this as a side effect, not super jazzed about this
-        observedActiveSegment = getActiveSegment(streamDirectory)
-        return FileChannel.open(observedActiveSegment, StandardOpenOption.READ)
+        //observedActiveSegment = getActiveSegment(streamDirectory)
+        return FileChannel.open(consumedSegment, StandardOpenOption.READ)
     }
 
     // Consumer lock block: returns `false` if end-of-fetch abnormality
