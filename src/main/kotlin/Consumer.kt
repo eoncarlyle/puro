@@ -12,13 +12,18 @@ import java.util.concurrent.PriorityBlockingQueue
 
 
 sealed class ConsumerError {
-    class FailingCrc : ConsumerError()
-    class NoReminingBuffer : ConsumerError()
-    class HardTransitionFailure : ConsumerError()
+    data object FailingCrc : ConsumerError()
+    data object NoReminingBuffer : ConsumerError()
+    data object HardTransitionFailure : ConsumerError()
+}
+
+sealed class GetRecordAbnormality {
+    data object Truncation : GetRecordAbnormality()
+    data object RecordsAfterTombstone : GetRecordAbnormality()
 }
 
 sealed class FetchSuccess() {
-    class CleanFetch() : FetchSuccess()
+    data object CleanFetch : FetchSuccess()
     class HardTransition(val abnormalOffsetWindowStart: Long, val abnormalOffsetWindowStop: Long) : FetchSuccess()
 }
 
@@ -26,7 +31,7 @@ typealias ConsumerResult<R> = Either<ConsumerError, R>
 
 fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     if (!byteBuffer.hasRemaining()) {
-        return left(ConsumerError.NoReminingBuffer())
+        return left(ConsumerError.NoReminingBuffer)
     }
     val start = byteBuffer.position()
     val expectedCrc = byteBuffer.get()
@@ -41,20 +46,27 @@ fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
 
     return if (expectedCrc == actualCrc) {
         right(PuroRecord(topic, key, value) to (byteBuffer.position() - start))
-    } else left(ConsumerError.FailingCrc())
+    } else left(ConsumerError.FailingCrc)
 }
+
+fun isRelevantTopic(
+    topic: ByteArray,
+    subscribedTopics: List<ByteArray>,
+): Boolean = subscribedTopics.any { it.contentEquals(topic) } || ControlTopic.entries.toTypedArray()
+    .any { it.value.contentEquals(topic) }
 
 fun getRecords(
     byteBuffer: ByteBuffer,
     initialOffset: Long,
     finalOffset: Long,
-    topics: List<ByteArray>,
+    subscribedTopics: List<ByteArray>,
     logger: Logger,
     isEndOfFetch: Boolean = false
-): Triple<List<PuroRecord>, Long, Boolean> {
+): Triple<List<PuroRecord>, Long, GetRecordAbnormality?> {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
-    var abnormality = false // Only matters if end-of-fetch
+    var truncationAbnormality = false // Only matters if end-of-fetch
+
     byteBuffer.position(initialOffset.toInt()) //Saftey issue
     byteBuffer.limit(finalOffset.toInt()) //Saftey issue
 
@@ -74,9 +86,8 @@ fun getRecords(
             byteBuffer.readSafety()?.getArraySlice(topicLengthData.first)
         } else null
 
-
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
-        if (topicMetadata == null || !topics.any { it.contentEquals(topicMetadata.first) }) {
+        if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics)) {
             if (lengthData != null && (1 + lengthData.second + lengthData.first) <= byteBuffer.remaining()) {
                 offset += (1 + lengthData.second + lengthData.first)
                 continue
@@ -115,23 +126,25 @@ fun getRecords(
             //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
             val totalLength = 1 + encodedTotalLengthBitCount + subrecordLength
 
-            if (expectedCrc == actualCrc && topics.any { it.contentEquals(topic) }) {
+            if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
+            } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic) && !byteBuffer.hasRemaining()) {
+                return Triple(records, offset, if (isEndOfFetch && byteBuffer.hasRemaining()) GetRecordAbnormality.RecordsAfterTombstone else null)
             }
 
             // These are necessarily 'interior' messages.
             offset += totalLength
         } else {
-            abnormality = true
+            truncationAbnormality = true
         }
     }
 
-    return Triple(records, offset, if (isEndOfFetch) abnormality else false)
+    return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetRecordAbnormality.Truncation else null)
 }
 
 class PuroConsumer(
     streamDirectory: Path,
-    subscribedTopics: List<String>,
+    serialisedTopicNames: List<String>,
     val logger: Logger,
     val buffsize: Int = 8192,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
@@ -157,7 +170,7 @@ class PuroConsumer(
         }
 
     var segmentChangeQueue = PriorityBlockingQueue(0, compareConsumerSegmentPair)
-    var topics = subscribedTopics.map { it.toByteArray() }
+    var subscribedTopics = serialisedTopicNames.map { it.toByteArray() }
 
     //fun stopListening() = watcher?.close()
 
@@ -205,7 +218,7 @@ class PuroConsumer(
 
     private fun ArrayList<PuroRecord>.onMessages() {
         //TODO: remove the filter once the getMessage optimisation taken care of?
-        this.filter { r -> topics.any { it.contentEquals(r.topic) } }
+        this.filter { r -> subscribedTopics.any { it.contentEquals(r.topic) } }
             .forEach { r -> onMessage(r) }
     }
 
@@ -243,7 +256,8 @@ class PuroConsumer(
     ): ConsumerResult<FetchSuccess> {
         if (abnormalOffsetWindow == null) {
             standardRead(fileChannel, records, producerOffset)
-            return right(FetchSuccess.CleanFetch())
+            //TODO: check messages after tombstone
+            return right(FetchSuccess.CleanFetch)
         } else {
             readBuffer.clear()
             fileChannel.read(readBuffer)
@@ -257,7 +271,8 @@ class PuroConsumer(
                     abnormalOffsetWindow = null
                     standardRead(fileChannel, records, producerOffset)
                     // No cleanup required
-                    right(FetchSuccess.CleanFetch())
+                    //TODO: check messages after tombstone
+                    right(FetchSuccess.CleanFetch)
                 },
                 ifLeft = {
                     // Hard producer transition: last producer failed, but new messages not interrupted
@@ -270,7 +285,7 @@ class PuroConsumer(
                     getRecord(readBuffer)
                         .fold(
                             ifLeft = {
-                                Either.Left<ConsumerError, FetchSuccess>(ConsumerError.HardTransitionFailure())
+                                Either.Left<ConsumerError, FetchSuccess>(ConsumerError.HardTransitionFailure)
                             },
                             ifRight = { hardProducerTransitionResult ->
                                 consumerOffset += hardProducerTransitionResult.second
@@ -279,6 +294,7 @@ class PuroConsumer(
                                     abnormalOffsetWindow!!.second
                                 )
                                 abnormalOffsetWindow = null
+                                //TODO: check messages after tombstone
                                 standardRead(fileChannel, records, producerOffset)
                                 right(result)
                             }
@@ -316,7 +332,7 @@ class PuroConsumer(
                 readBuffer,
                 consumerOffset,
                 producerOffset,
-                topics,
+                subscribedTopics,
                 logger,
                 isEndOfFetch = isLastBatch
             )
@@ -324,7 +340,7 @@ class PuroConsumer(
             records.addAll(batchRecords)
             consumerOffset = nextOffset
 
-            if (isLastBatch && abnormality) {
+            if (isLastBatch && abnormality == GetRecordAbnormality.Truncation) {
                 abnormalOffsetWindow = consumerOffset to producerOffset
             }
         }

@@ -56,6 +56,14 @@ sealed class FetchSuccess() {
 }
 ```
 
+### 2025-10-21
+I am making an implicit assumption that there can only be either a truncation abnormality or a records after segment
+abnormality. I think this is a decent assumption - you could make an argument that a segment tombstone inside the
+segment would get clobbered, but that is true regardless and we're assuming clients will not add or delete bytes inside
+of an otherwise succesful write, although a hard failure that truncates is of course something we're dealing with.
+
+Left some TODOS for re-tombstoning
+
 ### 2025-10-19
 
 > There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
