@@ -13,25 +13,31 @@ import java.util.concurrent.PriorityBlockingQueue
 
 sealed class ConsumerError {
     data object FailingCrc : ConsumerError()
-    data object NoReminingBuffer : ConsumerError()
+    data object NoRemainingBuffer : ConsumerError()
     data object HardTransitionFailure : ConsumerError()
 }
 
 sealed class GetRecordAbnormality {
     data object Truncation : GetRecordAbnormality()
     data object RecordsAfterTombstone : GetRecordAbnormality()
+    data object StandardTombstone : GetRecordAbnormality()
 }
 
 sealed class FetchSuccess() {
     data object CleanFetch : FetchSuccess()
-    class HardTransition(val abnormalOffsetWindowStart: Long, val abnormalOffsetWindowStop: Long) : FetchSuccess()
+    data object RecordsAfterTombstone : FetchSuccess()
+    class HardTransition(
+        val abnormalOffsetWindowStart: Long,
+        val abnormalOffsetWindowStop: Long,
+        val recordsAfterTombstone: Boolean
+    ) : FetchSuccess()
 }
 
 typealias ConsumerResult<R> = Either<ConsumerError, R>
 
 fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     if (!byteBuffer.hasRemaining()) {
-        return left(ConsumerError.NoReminingBuffer)
+        return left(ConsumerError.NoRemainingBuffer)
     }
     val start = byteBuffer.position()
     val expectedCrc = byteBuffer.get()
@@ -75,12 +81,8 @@ fun getRecords(
 
         //val (encodedTotalLength, encodedTotalLengthBitCount, crc1) = byteBuffer.fromVlq()
         val lengthData = byteBuffer.readSafety()?.fromVlq()
-
         //val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
         val topicLengthData = byteBuffer.readSafety()?.fromVlq()
-
-        //TODO optimisation: as soon as the length and topic are known, skip message if not in `listenedTopics`
-
         //val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
         val topicMetadata = if (topicLengthData != null) {
             byteBuffer.readSafety()?.getArraySlice(topicLengthData.first)
@@ -93,15 +95,12 @@ fun getRecords(
                 continue
             }
         }
-
         //val (keyLength, keyLengthBitCount, crc4) = byteBuffer.fromVlq()
         val keyMetdata = byteBuffer.readSafety()?.fromVlq()
-
         // val (key, crc5) = byteBuffer.getSubsequence(keyLength)
         val keyData = if (keyMetdata != null) {
             byteBuffer.readSafety()?.getBufferSlice(keyMetdata.first)
         } else null
-
         // val (value, crc6) = byteBuffer.getSubsequence(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
         val valueData = if (lengthData != null && topicLengthData != null && keyMetdata != null) {
             byteBuffer.readSafety()
@@ -121,15 +120,19 @@ fun getRecords(
             val (value, crc6) = valueData
 
             val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
-
             // Equivalent to:
             //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
             val totalLength = 1 + encodedTotalLengthBitCount + subrecordLength
 
             if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
-            } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic) && !byteBuffer.hasRemaining()) {
-                return Triple(records, offset, if (isEndOfFetch && byteBuffer.hasRemaining()) GetRecordAbnormality.RecordsAfterTombstone else null)
+            } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
+                val abnormality = if (isEndOfFetch || byteBuffer.hasRemaining()) {
+                    GetRecordAbnormality.RecordsAfterTombstone
+                } else {
+                    GetRecordAbnormality.StandardTombstone
+                }
+                return Triple(records, offset, abnormality)
             }
 
             // These are necessarily 'interior' messages.
@@ -234,6 +237,10 @@ class PuroConsumer(
             when (it) {
                 is FetchSuccess.CleanFetch -> records.onMessages()
 
+                is FetchSuccess.RecordsAfterTombstone -> {
+
+                }
+
                 is FetchSuccess.HardTransition -> {
                     hardTransitionCleanup(it)
                     records.onMessages()
@@ -245,19 +252,43 @@ class PuroConsumer(
         }
     }
 
+    fun onRecordsAfterTombstone() {
+
+    }
+
     fun onConsumedSegmentTransition() {
         //TODO
     }
 
-    fun fetch(
+    private fun happyPathFetch(
+        fileChannel: FileChannel,
+        records: ArrayList<PuroRecord>,
+        producerOffset: Long
+    ): ConsumerResult<FetchSuccess> {
+        val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
+            fileChannel,
+            consumerOffset,
+            producerOffset,
+        )
+        records.addAll(fetchedRecords)
+        consumerOffset = finalConsumerOffset
+        abnormalOffsetWindow = readAbnormalOffsetWindow
+        currentConsumerLocked = readTombstoneStatus != ReadTombstoneStatus.NotTombstoned
+
+        return if (readTombstoneStatus != ReadTombstoneStatus.RecordsAfterTombstone) {
+            right(FetchSuccess.CleanFetch)
+        } else {
+            right(FetchSuccess.RecordsAfterTombstone)
+        }
+    }
+
+    private fun fetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
         producerOffset: Long
     ): ConsumerResult<FetchSuccess> {
         if (abnormalOffsetWindow == null) {
-            standardRead(fileChannel, records, producerOffset)
-            //TODO: check messages after tombstone
-            return right(FetchSuccess.CleanFetch)
+            return happyPathFetch(fileChannel, records, producerOffset)
         } else {
             readBuffer.clear()
             fileChannel.read(readBuffer)
@@ -269,10 +300,7 @@ class PuroConsumer(
                 ifRight = { result ->
                     consumerOffset += result.second
                     abnormalOffsetWindow = null
-                    standardRead(fileChannel, records, producerOffset)
-                    // No cleanup required
-                    //TODO: check messages after tombstone
-                    right(FetchSuccess.CleanFetch)
+                    return happyPathFetch(fileChannel, records, producerOffset)
                 },
                 ifLeft = {
                     // Hard producer transition: last producer failed, but new messages not interrupted
@@ -289,17 +317,31 @@ class PuroConsumer(
                             },
                             ifRight = { hardProducerTransitionResult ->
                                 consumerOffset += hardProducerTransitionResult.second
-                                val result = FetchSuccess.HardTransition(
-                                    abnormalOffsetWindow!!.first,
-                                    abnormalOffsetWindow!!.second
-                                )
-                                abnormalOffsetWindow = null
+
+                                val originalAbnormalOffsetWindow =
+                                    Pair(abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
                                 //TODO: check messages after tombstone
-                                standardRead(fileChannel, records, producerOffset)
+
+                                val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
+                                    fileChannel,
+                                    consumerOffset,
+                                    producerOffset
+                                )
+                                records.addAll(fetchedRecords)
+                                consumerOffset = finalConsumerOffset
+                                abnormalOffsetWindow = readAbnormalOffsetWindow
+                                currentConsumerLocked = readTombstoneStatus != ReadTombstoneStatus.NotTombstoned
+
+                                // It is of course possible that there are back-to-back hard transition failures
+                                val result = FetchSuccess.HardTransition(
+                                    originalAbnormalOffsetWindow.first,
+                                    originalAbnormalOffsetWindow.second,
+                                    readTombstoneStatus != ReadTombstoneStatus.RecordsAfterTombstone
+                                )
                                 right(result)
                             }
                         )
-                },
+                }
             )
         }
     }
@@ -316,34 +358,77 @@ class PuroConsumer(
         (offsetDelta / buffsize) + 1
     }).toInt()
 
+    sealed class ReadTombstoneStatus {
+        data object NotTombstoned : ReadTombstoneStatus()
+        data object RecordsAfterTombstone : ReadTombstoneStatus()
+        data object StandardTombstone : ReadTombstoneStatus()
+
+    }
+
+    data class StandardRead(
+        val finalConsumerOffset: Long,
+        val fetchedRecords: ArrayList<PuroRecord>,
+        val abnormalOffsetWindow: Pair<Long, Long>?,
+        val recordsAfterTombstone: ReadTombstoneStatus,
+    )
 
     fun standardRead(
         fileChannel: FileChannel,
-        records: ArrayList<PuroRecord>,
+        startingReadOffset: Long,
         producerOffset: Long
-    ) {
-        val steps = getStepCount(producerOffset - consumerOffset)
+    ): StandardRead {
+        // When I transitioned to returning values rather than carrying out side effects I needed to decide how to best
+        // name the return variables that would be mapped to fields by the caller and I used a `read` as a prefix
+        var readOffset = startingReadOffset
+        val steps = getStepCount(producerOffset - readOffset)
+
+        val readRecords = ArrayList<PuroRecord>()
+        var readAbnormalOffsetWindow: Pair<Long, Long>? = null
+        var readRecordsAfterTombstone: Boolean = false
+
+        var lastAbnormality: GetRecordAbnormality? = null
         for (step in 0..<steps) {
             readBuffer.clear()
             fileChannel.read(readBuffer)
             readBuffer.flip()
             val isLastBatch = (step == steps - 1)
-            val (batchRecords, nextOffset, abnormality) = getRecords(
+            val (batchRecords, nextReadConsumerOffset, abnormality) = getRecords(
                 readBuffer,
-                consumerOffset,
+                readOffset,
                 producerOffset,
                 subscribedTopics,
                 logger,
                 isEndOfFetch = isLastBatch
             )
+            lastAbnormality = abnormality
 
-            records.addAll(batchRecords)
-            consumerOffset = nextOffset
+            readRecords.addAll(batchRecords)
+            readOffset = nextReadConsumerOffset
 
             if (isLastBatch && abnormality == GetRecordAbnormality.Truncation) {
-                abnormalOffsetWindow = consumerOffset to producerOffset
+                readAbnormalOffsetWindow = consumerOffset to producerOffset
+            } else if (abnormality == GetRecordAbnormality.RecordsAfterTombstone ||
+                abnormality == GetRecordAbnormality.StandardTombstone && step < (steps - 1)
+            ) {
+                readRecordsAfterTombstone = true
+                break
             }
         }
+
+        if (lastAbnormality == GetRecordAbnormality.StandardTombstone || lastAbnormality == GetRecordAbnormality.RecordsAfterTombstone) {
+            currentConsumerLocked = true
+        }
+        return StandardRead(
+            readOffset,
+            readRecords,
+            readAbnormalOffsetWindow,
+            when (lastAbnormality) {
+                is GetRecordAbnormality.StandardTombstone -> ReadTombstoneStatus.StandardTombstone
+                is GetRecordAbnormality.RecordsAfterTombstone -> ReadTombstoneStatus.RecordsAfterTombstone
+                else -> ReadTombstoneStatus.NotTombstoned
+            }
+        )
+        // return readAbnormalOffsetWindow
     }
 
     private fun getActiveSegmentChannel(): FileChannel {

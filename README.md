@@ -34,6 +34,16 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Development Log
 
+### 2025-10-22
+`fetch` is nearly a pure function at this point. The reason I did this is that I want as few functions as possible 
+carrying out field modifications. The `ConsumerResult` can handle if there are records after the tombstone, so that
+really doesn't need to be baked into a property. The same cannot be said about the abnormal offset window. That is 
+something that needs to be handled by the next fetch.
+
+What should definitely be tested is successive hard transitions that include a batch or two of items that are fine 
+before the truncated message. Following these with some continuations would make sense. After all of this work on side
+conditions, there isn't much of an excuse to not eke out all the edge cases with how testable this is.
+
 ### 2025-10-20
 The consumer's current segment is not always the active segment, so I am now calling the currently consumed segment just
 the 'consumed segment'.
