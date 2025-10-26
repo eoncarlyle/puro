@@ -21,6 +21,7 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Consumer and producer builders that prevent single-byte topics
 - [ ] Control message handling and topic optimisation for consumers
 - [ ] Active segment transition race condition handling
+- [ ] Consumer wait-on-start
 - [ ] Producer result types
 - [ ] Protection on VLQs
 - [ ] Fetch interior failures
@@ -33,6 +34,58 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-10-25
+How much sense, actually, does it make for the consumer to _create the first segment if it doesn't exist_ I mean in 
+isolation that already sounds pretty bad but, more relevant for work on the consumer, it sets up inconsistent behaviour
+for the consumer. It seemed like it would be annoying to do but apparently things aren't so bad but I could have null
+active segment behaviour to denote an active segment that hasn't been confirmed yet.
+
+```text
+                    ┌───────────────┐
+              ┌────>│ B) Consuming  │──┐
+              │     └───────────────┘  │
+              │                        │
+              │                        │
+              │                        v
+     ┌────────────────┐         ┌─────────────┐
+     │ A) Waiting for │<────────│ C) Locked   │
+     │   Consumed     │         │   Segment   │
+     │    Segment     │         └─────────────┘
+     └────────────────┘
+
+```
+
+The consumer waiting rather than just creating the segment on start is marked as 'consumer wait on start'.
+
+```kotlin
+val subrecordLength =
+  encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+val encodedTotalLength = subrecordLength.toVlqEncoding()
+val recordBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + subrecordLength)
+
+private data class SerialisedPuroRecord(
+  val messageCrc: Byte,
+  val encodedTotalLength: ByteBuffer,
+  val encodedTopicLength: ByteBuffer,
+  val encodedTopic: ByteArray,
+  val encodedKeyLength: ByteBuffer,
+  val key: ByteBuffer,
+  val value: ByteBuffer
+)
+```
+
+A note on `onHardTransitionCleanup` - getting the math on this will be annoying. The `ControlTopic.INVALID_MESSAGE` will
+necessarily be `0x01`. The key length, key, and value aren't important and can be kept as the existing byte values. We
+know what the length of `recordBuffer` will be, but rephrasing in math terms:
+
+```text
+subrecordLength = 1 + 1 + messageTailLength 
+messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
+```
+
+Where `messageTailLength` is `encodedKeyLength.capacity() + keyLength + valueLength`. The smallest capacity possible is 
+1, because even expressing a length of zero requires one byte. This is a profoundly 
 
 ### 2025-10-22
 `fetch` is nearly a pure function at this point. The reason I did this is that I want as few functions as possible 

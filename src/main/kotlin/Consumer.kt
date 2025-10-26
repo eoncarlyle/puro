@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
+import kotlin.math.log
 
 
 sealed class ConsumerError {
@@ -25,6 +26,7 @@ sealed class GetRecordAbnormality {
 
 sealed class FetchSuccess() {
     data object CleanFetch : FetchSuccess()
+    data object CleanSegmentClosure : FetchSuccess()
     data object RecordsAfterTombstone : FetchSuccess()
     class HardTransition(
         val abnormalOffsetWindowStart: Long,
@@ -146,7 +148,7 @@ fun getRecords(
 }
 
 class PuroConsumer(
-    streamDirectory: Path,
+    val streamDirectory: Path,
     serialisedTopicNames: List<String>,
     val logger: Logger,
     val buffsize: Int = 8192,
@@ -189,7 +191,7 @@ class PuroConsumer(
                     if (event.path() == consumedSegment) {
                         segmentChangeQueue.offer(ConsumerSegmentEvent(Files.size(consumedSegment), currentSegmentOrder))
                     } else if (incomingSegmentOrder > currentSegmentOrder) {
-                        segmentChangeQueue.offer(ConsumerSegmentEvent(-1, incomingSegmentOrder))
+                        segmentChangeQueue.offer(ConsumerSegmentEvent(Files.size(consumedSegment), incomingSegmentOrder))
                     } else {
                         logger.warn("Modify event for non-consumed path ${event.path()} recorded, possible damaged data integrity")
                     }
@@ -207,13 +209,23 @@ class PuroConsumer(
         Thread { watcher?.watch() }.start()
         Thread {
             while (true) {
-                val (producerOffset) = segmentChangeQueue.take()
-                // TODO the magic value of a zero consumer offset is kinda lame, would
-                // TODO it be better to handle a null instead?
-                if (producerOffset > 0) {
+                val (producerOffset, incomingSegmentOrder) = segmentChangeQueue.take()
+                val consumedSegmentOrder = getSegmentOrder(consumedSegment)
+
+                if (currentConsumerLocked) {
+                    logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $incomingSegmentOrder")
+                } else if (incomingSegmentOrder == consumedSegmentOrder) {
                     onConsumedSegmentAppend(producerOffset)
+                } else if (incomingSegmentOrder == consumedSegmentOrder + 1) {
+                    val nextSegment = getSegment(streamDirectory, incomingSegmentOrder)
+                    if (nextSegment != null) {
+                        currentConsumerLocked = false
+                        onConsumedSegmentAppend(consumerOffset)
+                    } else {
+                        logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
+                    }
                 } else {
-                    onConsumedSegmentTransition()
+                    logger.error("Illegal ConsumerSegmentEvent: segment order $incomingSegmentOrder, at lock state $currentConsumerLocked")
                 }
             }
         }.start()
@@ -235,14 +247,23 @@ class PuroConsumer(
 
         fetchResult.onRight {
             when (it) {
-                is FetchSuccess.CleanFetch -> records.onMessages()
+                is FetchSuccess.CleanFetch -> {
+                    records.onMessages()
+                }
+
+                is FetchSuccess.CleanSegmentClosure -> {
+                    currentConsumerLocked = true
+                    records.onMessages()
+                }
 
                 is FetchSuccess.RecordsAfterTombstone -> {
-
+                    reterminateSegment()
+                    currentConsumerLocked = true
+                    records.onMessages()
                 }
 
                 is FetchSuccess.HardTransition -> {
-                    hardTransitionCleanup(it)
+                    onHardTransitionCleanup(it)
                     records.onMessages()
                 }
             }
@@ -252,13 +273,6 @@ class PuroConsumer(
         }
     }
 
-    fun onRecordsAfterTombstone() {
-
-    }
-
-    fun onConsumedSegmentTransition() {
-        //TODO
-    }
 
     private fun happyPathFetch(
         fileChannel: FileChannel,
@@ -320,7 +334,6 @@ class PuroConsumer(
 
                                 val originalAbnormalOffsetWindow =
                                     Pair(abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
-                                //TODO: check messages after tombstone
 
                                 val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
                                     fileChannel,
@@ -330,7 +343,6 @@ class PuroConsumer(
                                 records.addAll(fetchedRecords)
                                 consumerOffset = finalConsumerOffset
                                 abnormalOffsetWindow = readAbnormalOffsetWindow
-                                currentConsumerLocked = readTombstoneStatus != ReadTombstoneStatus.NotTombstoned
 
                                 // It is of course possible that there are back-to-back hard transition failures
                                 val result = FetchSuccess.HardTransition(
@@ -346,10 +358,22 @@ class PuroConsumer(
         }
     }
 
-    fun hardTransitionCleanup(transition: FetchSuccess.HardTransition) {
+    fun onHardTransitionCleanup(transition: FetchSuccess.HardTransition) {
         //TODO: Write a message with a zero'd CRC bit, zero topic and key lengths, with a message length to match the gap
         //TODO: Re-acquire a read lock and continue on as normal
         //TODO: After the lock is acquired, call a function outside of the class
+        if (transition.recordsAfterTombstone) {
+            reterminateSegment()
+        }
+    }
+
+    fun reterminateSegment() {
+        //TODO
+    }
+
+
+    fun onConsumedSegmentTransition() {
+        //TODO
     }
 
     fun getStepCount(offsetDelta: Long) = (if (offsetDelta % buffsize == 0L) {
@@ -384,7 +408,6 @@ class PuroConsumer(
 
         val readRecords = ArrayList<PuroRecord>()
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
-        var readRecordsAfterTombstone: Boolean = false
 
         var lastAbnormality: GetRecordAbnormality? = null
         for (step in 0..<steps) {
@@ -410,14 +433,11 @@ class PuroConsumer(
             } else if (abnormality == GetRecordAbnormality.RecordsAfterTombstone ||
                 abnormality == GetRecordAbnormality.StandardTombstone && step < (steps - 1)
             ) {
-                readRecordsAfterTombstone = true
+                lastAbnormality = abnormality
                 break
             }
         }
 
-        if (lastAbnormality == GetRecordAbnormality.StandardTombstone || lastAbnormality == GetRecordAbnormality.RecordsAfterTombstone) {
-            currentConsumerLocked = true
-        }
         return StandardRead(
             readOffset,
             readRecords,
@@ -428,7 +448,6 @@ class PuroConsumer(
                 else -> ReadTombstoneStatus.NotTombstoned
             }
         )
-        // return readAbnormalOffsetWindow
     }
 
     private fun getActiveSegmentChannel(): FileChannel {

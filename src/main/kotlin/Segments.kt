@@ -31,6 +31,12 @@ fun getActiveSegment(streamDirectory: Path): Path {
     return if (topFoundSegment.isPresent) {
         topFoundSegment.get()
     } else {
-        streamDirectory.resolve("${SEGMENT_PREFIX}0.${FILE_EXTENSION}").also { Files.createFile(it) }
+        streamDirectory.resolve("$SEGMENT_PREFIX}0.${FILE_EXTENSION}").also { Files.createFile(it) }
     }
+}
+
+fun getSegment(streamDirectory: Path, segmentOrder: Int): Path? {
+    return if (Files.exists(streamDirectory) && Files.exists(streamDirectory.resolve("$SEGMENT_PREFIX$segmentOrder.$FILE_EXTENSION"))) {
+        streamDirectory.resolve("$SEGMENT_PREFIX$segmentOrder.$FILE_EXTENSION")
+    } else null
 }
