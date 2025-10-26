@@ -85,7 +85,25 @@ messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
 ```
 
 Where `messageTailLength` is `encodedKeyLength.capacity() + keyLength + valueLength`. The smallest capacity possible is 
-1, because even expressing a length of zero requires one byte. This is a profoundly 
+1, because even expressing a length of zero requires one byte. This is a profoundly cringe way to do this but I could
+just decrement until I hit the answer but every fibre in my body tells me that this is a solveable nonlinear equation. I
+think that a function in `Vlq` gives the answer:
+
+```kotlin
+fun ceilingDivision(dividend: Int, divisor: Int): Int = (dividend + divisor - 1) / divisor
+
+fun Int.toVlqEncoding(): ByteBuffer {
+  //...
+  val bitsReq = Int.SIZE_BITS - this.countLeadingZeroBits()
+  val bytesReq = ceilingDivision(bitsReq, 7)
+  //...
+}
+```
+However - `maxVlqInt` can be expressed in 4 bytes (which, of course, I learned and forgot in CSCI 1933). It's not that 
+an inverse function couldn't be created, but if a logarithm needs to be accessed for the equivalent of the 
+`countLeadingZeroBits` we're in a bad spot. There are four possible answers based of the integer range so there's no
+reason not to just to hardcode those in. That's definitely the way to go.
+
 
 ### 2025-10-22
 `fetch` is nearly a pure function at this point. The reason I did this is that I want as few functions as possible 
