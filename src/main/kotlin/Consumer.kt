@@ -147,6 +147,24 @@ fun getRecords(
     return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetRecordAbnormality.Truncation else null)
 }
 
+fun hardTransitionSubrecordLength(absoluteMessageSize: Int): Int {
+    //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
+    var subrecordLength = absoluteMessageSize - 1
+
+    while (absoluteMessageSize != 1 + ceilingDivision(
+            Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
+            7
+        ) + subrecordLength
+    ) {
+        var a =1 + ceilingDivision(
+            Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
+            7
+        ) + subrecordLength
+        subrecordLength--
+    }
+    return subrecordLength
+}
+
 class PuroConsumer(
     val streamDirectory: Path,
     serialisedTopicNames: List<String>,
@@ -191,7 +209,12 @@ class PuroConsumer(
                     if (event.path() == consumedSegment) {
                         segmentChangeQueue.offer(ConsumerSegmentEvent(Files.size(consumedSegment), currentSegmentOrder))
                     } else if (incomingSegmentOrder > currentSegmentOrder) {
-                        segmentChangeQueue.offer(ConsumerSegmentEvent(Files.size(consumedSegment), incomingSegmentOrder))
+                        segmentChangeQueue.offer(
+                            ConsumerSegmentEvent(
+                                Files.size(consumedSegment),
+                                incomingSegmentOrder
+                            )
+                        )
                     } else {
                         logger.warn("Modify event for non-consumed path ${event.path()} recorded, possible damaged data integrity")
                     }
@@ -335,16 +358,17 @@ class PuroConsumer(
                                 val originalAbnormalOffsetWindow =
                                     Pair(abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
 
-                                val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
+                                val (finalConsumerOffset, fetchedRecords, subsequentAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
                                     fileChannel,
                                     consumerOffset,
                                     producerOffset
                                 )
                                 records.addAll(fetchedRecords)
                                 consumerOffset = finalConsumerOffset
-                                abnormalOffsetWindow = readAbnormalOffsetWindow
+                                abnormalOffsetWindow = subsequentAbnormalOffsetWindow
 
-                                // It is of course possible that there are back-to-back hard transition failures
+                                // It is of course possible that there are back-to-back hard transition failures,
+                                // and this is reflected in the `originalAbnormalOffsetWindow` vs. `subsequentAbnormalOffsetWindow`
                                 val result = FetchSuccess.HardTransition(
                                     originalAbnormalOffsetWindow.first,
                                     originalAbnormalOffsetWindow.second,

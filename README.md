@@ -35,6 +35,11 @@ there will just be a log format and client libraries for producers and consumers
 
 ## Development Log
 
+### 2025-10-26
+`1 + ceil(log2(y)) + y = x` doesn't appear to have a closed-form solution, so the decrementing option really isn't that
+bad. (But that doesn't _exactly_ appear to be the relevant function? Much to consider
+
+
 ### 2025-10-25
 How much sense, actually, does it make for the consumer to _create the first segment if it doesn't exist_ I mean in 
 isolation that already sounds pretty bad but, more relevant for work on the consumer, it sets up inconsistent behaviour
