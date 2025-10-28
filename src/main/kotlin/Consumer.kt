@@ -1,4 +1,3 @@
-import PuroProducer.Companion.retryDelay
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.Logger
@@ -9,7 +8,8 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
-import kotlin.math.log
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.toJavaDuration
 
 
 sealed class ConsumerError {
@@ -55,6 +55,14 @@ fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     return if (expectedCrc == actualCrc) {
         right(PuroRecord(topic, key, value) to (byteBuffer.position() - start))
     } else left(ConsumerError.FailingCrc)
+}
+
+fun getTopicOnPossiblyTruncatedMessage(byteBuffer: ByteBuffer): ByteArray {
+    byteBuffer.position(1)
+    byteBuffer.fromVlq() //Discarding the length but advancing buffer
+    val (topicLength) = byteBuffer.fromVlq()
+    val (topic) = byteBuffer.getArraySlice(topicLength)
+    return topic
 }
 
 fun isRelevantTopic(
@@ -147,19 +155,15 @@ fun getRecords(
     return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetRecordAbnormality.Truncation else null)
 }
 
-fun hardTransitionSubrecordLength(absoluteMessageSize: Int): Int {
+fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
     //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
-    var subrecordLength = absoluteMessageSize - 1
+    var subrecordLength = subrecordLengthMetaLengthSum - 1
 
-    while (absoluteMessageSize != 1 + ceilingDivision(
+    while (subrecordLengthMetaLengthSum != 1 + ceilingDivision(
             Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
             7
         ) + subrecordLength
     ) {
-        var a =1 + ceilingDivision(
-            Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
-            7
-        ) + subrecordLength
         subrecordLength--
     }
     return subrecordLength
@@ -172,6 +176,11 @@ class PuroConsumer(
     val buffsize: Int = 8192,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) : Runnable {
+    companion object {
+        // This should be configurable?
+        private val retryDelay = 10.milliseconds.toJavaDuration()
+    }
+
     //TODO make this configurable:
     var consumedSegment = getActiveSegment(streamDirectory)
     var consumerOffset = 0L //First byte offset that hasn't been read
@@ -386,18 +395,47 @@ class PuroConsumer(
         //TODO: Write a message with a zero'd CRC bit, zero topic and key lengths, with a message length to match the gap
         //TODO: Re-acquire a read lock and continue on as normal
         //TODO: After the lock is acquired, call a function outside of the class
+
+        val subrecordLengthMetaLengthSum = transition.abnormalOffsetWindowStop - transition.abnormalOffsetWindowStart
+        getConsumedSegmentChannel().use { consumedSegmentChannel ->
+            var lock: FileLock?
+            do {
+                lock = consumedSegmentChannel.tryLock(transition.abnormalOffsetWindowStart, subrecordLengthMetaLengthSum, false)
+                if (lock == null) {
+                    Thread.sleep(retryDelay) // Should eventually give up
+                }
+            } while (lock == null)
+            val byteBuffer = ByteBuffer.allocate(subrecordLengthMetaLengthSum.toInt()) //Saftey!
+            consumedSegmentChannel.position(transition.abnormalOffsetWindowStart)
+            consumedSegmentChannel.read(byteBuffer)
+            val topic = getTopicOnPossiblyTruncatedMessage(byteBuffer)
+
+            if (topic.equals(ControlTopic.INVALID_MESSAGE)) {
+                logger.info("Hard transition record cleaned by previous consumer")
+            } else {
+                val subrecordLength = hardTransitionSubrecordLength(subrecordLengthMetaLengthSum.toInt())
+                // Matching the questionable convention in producer, should be changed when the producer changes
+                val encodedTotalLength = subrecordLength.toVlqEncoding()
+
+                val cleanupRecord = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + subrecordLength)
+                cleanupRecord.put(0xFF.toByte())
+                cleanupRecord.put(encodedTotalLength)
+                cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value.size.toVlqEncoding())
+                cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value)
+                cleanupRecord.rewind()
+
+                consumedSegmentChannel.position(transition.abnormalOffsetWindowStart)
+                consumedSegmentChannel.write(cleanupRecord)
+            }
+        }
+
         if (transition.recordsAfterTombstone) {
             reterminateSegment()
         }
     }
 
     fun reterminateSegment() {
-        //TODO
-    }
-
-
-    fun onConsumedSegmentTransition() {
-        //TODO
+        //TODO: Check that 
     }
 
     fun getStepCount(offsetDelta: Long) = (if (offsetDelta % buffsize == 0L) {
@@ -474,7 +512,7 @@ class PuroConsumer(
         )
     }
 
-    private fun getActiveSegmentChannel(): FileChannel {
+    private fun getConsumedSegmentChannel(): FileChannel {
         // Setting this as a side effect, not super jazzed about this
         //observedActiveSegment = getActiveSegment(streamDirectory)
         return FileChannel.open(consumedSegment, StandardOpenOption.READ)
@@ -482,7 +520,7 @@ class PuroConsumer(
 
     // Consumer lock block: returns `false` if end-of-fetch abnormality
     private fun <T> withConsumerLock(position: Long, size: Long, block: (FileChannel) -> T): T {
-        getActiveSegmentChannel().use { channel ->
+        getConsumedSegmentChannel().use { channel ->
             var lock: FileLock?
             do {
                 lock = channel.tryLock(position, size, true)

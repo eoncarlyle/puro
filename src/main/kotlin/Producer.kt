@@ -23,6 +23,7 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val (topic, key, value) = record
     rewindAll(key, value)
 
+    // When I finally get around to changing the questionable variable names, change this for `onHardTransitionCleanup` too
     // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
     val topicLength = topic.size
     val encodedTopicLength = topicLength.toVlqEncoding()
@@ -141,7 +142,7 @@ class PuroProducer(
 ) {
     companion object {
         // This should be configurable?
-        val retryDelay = 10.milliseconds.toJavaDuration()
+        private val retryDelay = 10.milliseconds.toJavaDuration()
     }
 
     fun send(puroRecord: PuroRecord) {

@@ -108,9 +108,9 @@ class ConsumerTest {
     @Test
     fun `Simple hardTransitionSubrecordLength`() {
         for (i in 1..<27) {
-            val absoluteMessageSize = 1 shl i
-            val subrecordLength = hardTransitionSubrecordLength(absoluteMessageSize)
-            assertEquals(absoluteMessageSize, 1 + subrecordLength.toVlqEncoding().capacity() + subrecordLength)
+            val subrecordLengthWithMetaLength = 1 shl i
+            val subrecordLength = hardTransitionSubrecordLength(subrecordLengthWithMetaLength)
+            assertEquals(subrecordLengthWithMetaLength, 1 + subrecordLength.toVlqEncoding().capacity() + subrecordLength)
         }
         println(hardTransitionSubrecordLength(100))
         println(98.toVlqEncoding().capacity())
