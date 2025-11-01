@@ -24,7 +24,20 @@ sealed class GetRecordAbnormality {
     data object StandardTombstone : GetRecordAbnormality()
 }
 
-sealed class FetchSuccess() {
+private sealed class ReadTombstoneStatus {
+    data object NotTombstoned : ReadTombstoneStatus()
+    data object RecordsAfterTombstone : ReadTombstoneStatus()
+    data object StandardTombstone : ReadTombstoneStatus()
+}
+
+private data class StandardRead(
+    val finalConsumerOffset: Long,
+    val fetchedRecords: ArrayList<PuroRecord>,
+    val abnormalOffsetWindow: Pair<Long, Long>?,
+    val recordsAfterTombstone: ReadTombstoneStatus,
+)
+
+private sealed class FetchSuccess() {
     data object CleanFetch : FetchSuccess()
     data object CleanSegmentClosure : FetchSuccess()
     data object RecordsAfterTombstone : FetchSuccess()
@@ -37,31 +50,31 @@ sealed class FetchSuccess() {
 
 typealias ConsumerResult<R> = Either<ConsumerError, R>
 
-fun getRecord(byteBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
-    if (!byteBuffer.hasRemaining()) {
+fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
+    if (!recordBuffer.hasRemaining()) {
         return left(ConsumerError.NoRemainingBuffer)
     }
-    val start = byteBuffer.position()
-    val expectedCrc = byteBuffer.get()
-    val (encodedTotalLength, _, crc1) = byteBuffer.fromVlq()
-    val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
-    val (topic, crc3) = byteBuffer.getArraySlice(topicLength)
-    val (keyLength, keyLengthBitCount, crc4) = byteBuffer.fromVlq()
-    val (key, crc5) = byteBuffer.getBufferSlice(keyLength)
-    val (value, crc6) = byteBuffer.getBufferSlice(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
+    val start = recordBuffer.position()
+    val expectedCrc = recordBuffer.get()
+    val (encodedTotalLength, _, crc1) = recordBuffer.fromVlq()
+    val (topicLength, topicLengthBitCount, crc2) = recordBuffer.fromVlq()
+    val (topic, crc3) = recordBuffer.getArraySlice(topicLength)
+    val (keyLength, keyLengthBitCount, crc4) = recordBuffer.fromVlq()
+    val (key, crc5) = recordBuffer.getBufferSlice(keyLength)
+    val (value, crc6) = recordBuffer.getBufferSlice(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
 
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
     return if (expectedCrc == actualCrc) {
-        right(PuroRecord(topic, key, value) to (byteBuffer.position() - start))
+        right(PuroRecord(topic, key, value) to (recordBuffer.position() - start))
     } else left(ConsumerError.FailingCrc)
 }
 
-fun getTopicOnPossiblyTruncatedMessage(byteBuffer: ByteBuffer): ByteArray {
-    byteBuffer.position(1)
-    byteBuffer.fromVlq() //Discarding the length but advancing buffer
-    val (topicLength) = byteBuffer.fromVlq()
-    val (topic) = byteBuffer.getArraySlice(topicLength)
+fun getTopicOnPossiblyTruncatedMessage(recordBuffer: ByteBuffer): ByteArray {
+    recordBuffer.position(1)
+    recordBuffer.fromVlq() //Discarding the length but advancing buffer
+    val (topicLength) = recordBuffer.fromVlq()
+    val (topic) = recordBuffer.getArraySlice(topicLength)
     return topic
 }
 
@@ -224,8 +237,10 @@ class PuroConsumer(
                                 incomingSegmentOrder
                             )
                         )
+                    } else if (incomingSegmentOrder == -1) {
+                        logger.warn("Modify event for non-segment path ${event.path()} recorded")
                     } else {
-                        logger.warn("Modify event for non-consumed path ${event.path()} recorded, possible damaged data integrity")
+                        logger.warn("Modify event for segment ${event.path()} recorded, possible damaged data integrity")
                     }
                 }
 
@@ -244,13 +259,16 @@ class PuroConsumer(
                 val (producerOffset, incomingSegmentOrder) = segmentChangeQueue.take()
                 val consumedSegmentOrder = getSegmentOrder(consumedSegment)
 
-                if (currentConsumerLocked) {
+                if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
                     logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $incomingSegmentOrder")
                 } else if (incomingSegmentOrder == consumedSegmentOrder) {
                     onConsumedSegmentAppend(producerOffset)
-                } else if (incomingSegmentOrder == consumedSegmentOrder + 1) {
+                } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
+                    // The priority queue will ensure all records of order _N_ will be received before all records of
+                    // order _N+1_
                     val nextSegment = getSegment(streamDirectory, incomingSegmentOrder)
                     if (nextSegment != null) {
+                        consumedSegment = nextSegment
                         currentConsumerLocked = false
                         onConsumedSegmentAppend(consumerOffset)
                     } else {
@@ -391,27 +409,24 @@ class PuroConsumer(
         }
     }
 
-    fun onHardTransitionCleanup(transition: FetchSuccess.HardTransition) {
-        //TODO: Write a message with a zero'd CRC bit, zero topic and key lengths, with a message length to match the gap
-        //TODO: Re-acquire a read lock and continue on as normal
-        //TODO: After the lock is acquired, call a function outside of the class
+    private fun onHardTransitionCleanup(transition: FetchSuccess.HardTransition) {
 
         val subrecordLengthMetaLengthSum = transition.abnormalOffsetWindowStop - transition.abnormalOffsetWindowStart
-        getConsumedSegmentChannel().use { consumedSegmentChannel ->
+        getConsumedSegmentChannel().use { channel ->
             var lock: FileLock?
             do {
-                lock = consumedSegmentChannel.tryLock(transition.abnormalOffsetWindowStart, subrecordLengthMetaLengthSum, false)
+                lock = channel.tryLock(transition.abnormalOffsetWindowStart, subrecordLengthMetaLengthSum, false)
                 if (lock == null) {
                     Thread.sleep(retryDelay) // Should eventually give up
                 }
             } while (lock == null)
-            val byteBuffer = ByteBuffer.allocate(subrecordLengthMetaLengthSum.toInt()) //Saftey!
-            consumedSegmentChannel.position(transition.abnormalOffsetWindowStart)
-            consumedSegmentChannel.read(byteBuffer)
-            val topic = getTopicOnPossiblyTruncatedMessage(byteBuffer)
+            val recordBuffer = ByteBuffer.allocate(subrecordLengthMetaLengthSum.toInt()) //Saftey!
+            channel.position(transition.abnormalOffsetWindowStart)
+            channel.read(recordBuffer)
+            val topic = getTopicOnPossiblyTruncatedMessage(recordBuffer)
 
             if (topic.equals(ControlTopic.INVALID_MESSAGE)) {
-                logger.info("Hard transition record cleaned by previous consumer")
+                logger.info("Hard transition record cleaned by another consumer")
             } else {
                 val subrecordLength = hardTransitionSubrecordLength(subrecordLengthMetaLengthSum.toInt())
                 // Matching the questionable convention in producer, should be changed when the producer changes
@@ -424,8 +439,8 @@ class PuroConsumer(
                 cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value)
                 cleanupRecord.rewind()
 
-                consumedSegmentChannel.position(transition.abnormalOffsetWindowStart)
-                consumedSegmentChannel.write(cleanupRecord)
+                channel.position(transition.abnormalOffsetWindowStart)
+                channel.write(cleanupRecord)
             }
         }
 
@@ -434,8 +449,28 @@ class PuroConsumer(
         }
     }
 
-    fun reterminateSegment() {
-        //TODO: Check that 
+    private fun reterminateSegment() {
+        getConsumedSegmentChannel().use { channel ->
+            val fileSize = channel.size()
+            var lock: FileLock?
+            do {
+                lock = channel.tryLock(fileSize - 5, Long.MAX_VALUE - fileSize, false)
+                if (lock == null) {
+                    Thread.sleep(retryDelay)
+                }
+            } while (lock == null)
+            val recordBuffer = ByteBuffer.allocate(5)
+            channel.read(recordBuffer)
+            getRecord(recordBuffer).onRight { (record, _) ->
+                if (record.topic.contentEquals(ControlTopic.SEGMENT_TOMBSTONE.value)) {
+                    logger.info("Segment reterminated by another consumer")
+                    return
+                }
+            }
+
+            channel.position(fileSize)
+            channel.write(ByteBuffer.wrap(TOMBSTONE_RECORD))
+        }
     }
 
     fun getStepCount(offsetDelta: Long) = (if (offsetDelta % buffsize == 0L) {
@@ -444,21 +479,7 @@ class PuroConsumer(
         (offsetDelta / buffsize) + 1
     }).toInt()
 
-    sealed class ReadTombstoneStatus {
-        data object NotTombstoned : ReadTombstoneStatus()
-        data object RecordsAfterTombstone : ReadTombstoneStatus()
-        data object StandardTombstone : ReadTombstoneStatus()
-
-    }
-
-    data class StandardRead(
-        val finalConsumerOffset: Long,
-        val fetchedRecords: ArrayList<PuroRecord>,
-        val abnormalOffsetWindow: Pair<Long, Long>?,
-        val recordsAfterTombstone: ReadTombstoneStatus,
-    )
-
-    fun standardRead(
+    private fun standardRead(
         fileChannel: FileChannel,
         startingReadOffset: Long,
         producerOffset: Long
@@ -513,8 +534,6 @@ class PuroConsumer(
     }
 
     private fun getConsumedSegmentChannel(): FileChannel {
-        // Setting this as a side effect, not super jazzed about this
-        //observedActiveSegment = getActiveSegment(streamDirectory)
         return FileChannel.open(consumedSegment, StandardOpenOption.READ)
     }
 

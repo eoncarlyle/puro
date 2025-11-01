@@ -14,16 +14,20 @@ there will just be a log format and client libraries for producers and consumers
     - [x] Fetch process buffer check: I think not all opertaions will work
     - [x] Event loop
     - [x] Consumer result types
-    - [ ] Final message cleanup
-    - [ ] `onHardProducerTransition`
-    - [ ] `onConsumedSegmentTransition`
+    - [x] Final message cleanup
+    - [x] `onHardProducerTransition`
+    - [x] `onConsumedSegmentTransition`
 - [ ] Active segment transition race condition handling
+- [ ] (Small) replace the hardcoded 1s with 
 - [ ] Consumer and producer builders that prevent single-byte topics
+- [ ] Consumer builder that allows
+  - For consumer to wait for a stream topic that hasn't been created yet (wait-on-start)
+  - Different consumer patterns - from latest, beginning, specific offset, etc.
+- [ ] Retry delay
 - [ ] Control message handling and topic optimisation for consumers
 - [ ] Active segment transition race condition handling
-- [ ] Consumer wait-on-start
 - [ ] Producer result types
-- [ ] Protection on VLQs
+- [ ] Type Protection on VLQs
 - [ ] Fetch interior failures
 - [x] Batching producer writes, compare benchmarks
 - [x] Benchmarks on same level as `src`
@@ -34,6 +38,9 @@ there will just be a log format and client libraries for producers and consumers
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-11-01
+Note that a segment tombstone has to be exactly 
 
 ### 2025-10-26
 `1 + ceil(log2(y)) + y = x` doesn't appear to have a closed-form solution, so the decrementing option really isn't that

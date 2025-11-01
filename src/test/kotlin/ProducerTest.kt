@@ -50,7 +50,6 @@ class ProducerTest {
         assertEquals(3, batchedBuffers.size)
     }
 
-
     @Test
     fun `Non-round byte buffer batching`() {
         val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
@@ -60,5 +59,12 @@ class ProducerTest {
         val producer = PuroProducer(Path("/tmp"), 3)
         producer.sendBatched(puroRecords)  { buffer -> { _: FileChannel -> batchedBuffers.add(buffer) } }
         assertEquals(4, batchedBuffers.size)
+    }
+
+    @Test
+    fun `Tombstone record length`() {
+        val tombstoneRecord =  PuroRecord(ControlTopic.SEGMENT_TOMBSTONE.value, byteArrayOf().toByteBuffer(), byteArrayOf().toByteBuffer())
+        assertEquals(TOMBSTONE_RECORD_LENGTH, createRecordBuffer(tombstoneRecord).capacity())
+        assertContentEquals(TOMBSTONE_RECORD, createRecordBuffer(tombstoneRecord).array())
     }
 }

@@ -1,5 +1,11 @@
 import java.nio.ByteBuffer
 
+const val TOMBSTONE_RECORD_LENGTH = 5
+
+// If you don't rewind, you will have problems!
+// The Haskellers have a point here!
+val TOMBSTONE_RECORD = byteArrayOf(-82, 3, 1, 0, 0)
+
 enum class ControlTopic(val value: ByteArray) {
     SEGMENT_TOMBSTONE(byteArrayOf(0x00)),
     INVALID_MESSAGE(byteArrayOf(0x01));
