@@ -2,7 +2,6 @@ import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
 import java.nio.channels.FileChannel
-import java.nio.charset.Charset
 import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.io.path.deleteIfExists
@@ -46,25 +45,23 @@ fun main() {
     Path("/tmp/puro/segment0.puro").deleteIfExists()
     val producer = PuroProducer(Path("/tmp/puro"), 10)
     val logger = LoggerFactory.getLogger("MainKt")
-    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger) {
-        val buffer = it.value
-        val byteArray = ByteArray(buffer.remaining()).apply {
-            buffer.get(this)
-        }
-        logger.info (String(byteArray, Charset.defaultCharset()))
+    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger, startPoint = ConsumerStart.StreamBeginning) {
+        println("${String(it.topic)}/${String(it.key.array())}/${String(it.value.array())}")
     }
     consumer.run()
-    var a = 0
+    Thread.sleep(1000)
+    var increment = 0
     repeat(5) {
         val messages = (0..<10).map {
-            a++
+            increment++
             PuroRecord(
-                "testTopic", a.toVlqEncoding(),
-                a.toString().toByteBuffer()
+                "testTopic", "key${increment}".toByteBuffer(),
+                "value${increment}".toByteBuffer()
             )
         }
+        logger.info("Sending batch")
         producer.send(messages)
-        Thread.sleep(1000)
+        //Thread.sleep(1)
     }
 }
 

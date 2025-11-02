@@ -64,6 +64,7 @@ fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
     return ByteBuffer.wrap(array) to crc8(array)
 }
 
+fun ByteBuffer.getSafeArraySlice(length: Int) = if (this.remaining() >= length) { this.getArraySlice(length) } else null
 fun ByteBuffer.getArraySlice(length: Int): Pair<ByteArray, Byte> {
     val array = ByteArray(length)
     this.get(array, 0, array.size)

@@ -8,6 +8,12 @@ This is probably wildly ambitious but this is an attempt to make an 'SQLite of e
 running Apache Kafka when producers and consumers are not separated by a network. Rather than any daemonised processed,
 there will just be a log format and client libraries for producers and consumers.
 
+Also - the `ByteBuffer.getArraySlice` does nothing to guard against when `length` is smaller than the remaining number 
+of bytes. Same applies for `ByteBuffer.getBufferSlice`, can reproduce this pretty easily.
+
+`getRecords` was incorrectly using the offsets as if it was operating on the active segment file stream rather than the
+read buffer, which introduced some issues. I _think_ I have those resolved now.
+
 ## Action Items
 
 - [ ] Make, test working consumers
@@ -17,14 +23,17 @@ there will just be a log format and client libraries for producers and consumers
     - [x] Final message cleanup
     - [x] `onHardProducerTransition`
     - [x] `onConsumedSegmentTransition`
+- [ ] `ByteBuffer.getArraySlice` and `ByteBuffer.getBufferSlice` fixes
+- [ ] Handling consumer starts with non-current consumer start
 - [ ] Active segment transition race condition handling
-- [ ] (Small) replace the hardcoded 1s with 
+- [ ] (Small) replace the hardcoded 1s with reference to current CRC size (in case it changes)
+- [ ] Check if the nonzero `consumerOffset` initialisation will actually work (ragged start problem)
 - [ ] Consumer and producer builders that prevent single-byte topics
 - [ ] Consumer builder that allows
   - For consumer to wait for a stream topic that hasn't been created yet (wait-on-start)
   - Different consumer patterns - from latest, beginning, specific offset, etc.
 - [ ] Retry delay
-- [ ] Control message handling and topic optimisation for consumers
+- [x] Control message handling and topic optimisation for consumers
 - [ ] Active segment transition race condition handling
 - [ ] Producer result types
 - [ ] Type Protection on VLQs
@@ -40,7 +49,12 @@ there will just be a log format and client libraries for producers and consumers
 ## Development Log
 
 ### 2025-11-01
-Note that a segment tombstone has to be exactly 
+A quick-and-dirty way to do wait-on-start is more or less what we have going on now, sorta. Also, it takes hundreds of 
+milliseconds for the consumer `DirectoryWatcher` to be ready to observe so it is easy for the producer to rocket 
+through a bunch of writes and then as far as the consumer is concerned no one has written to the stream yet. This really
+is not how the consumers should be behaving.
+
+
 
 ### 2025-10-26
 `1 + ceil(log2(y)) + y = x` doesn't appear to have a closed-form solution, so the decrementing option really isn't that

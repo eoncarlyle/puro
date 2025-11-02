@@ -11,6 +11,10 @@ import java.util.concurrent.PriorityBlockingQueue
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
+sealed class ConsumerStart {
+    data object StreamBeginning : ConsumerStart()
+    data object Latest : ConsumerStart()
+}
 
 sealed class ConsumerError {
     data object FailingCrc : ConsumerError()
@@ -71,6 +75,7 @@ fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
 }
 
 fun getTopicOnPossiblyTruncatedMessage(recordBuffer: ByteBuffer): ByteArray {
+    // TODO saftey
     recordBuffer.position(1)
     recordBuffer.fromVlq() //Discarding the length but advancing buffer
     val (topicLength) = recordBuffer.fromVlq()
@@ -85,7 +90,7 @@ fun isRelevantTopic(
     .any { it.value.contentEquals(topic) }
 
 fun getRecords(
-    byteBuffer: ByteBuffer,
+    readBuffer: ByteBuffer,
     initialOffset: Long,
     finalOffset: Long,
     subscribedTopics: List<ByteArray>,
@@ -96,37 +101,37 @@ fun getRecords(
     var offset = initialOffset
     var truncationAbnormality = false // Only matters if end-of-fetch
 
-    byteBuffer.position(initialOffset.toInt()) //Saftey issue
-    byteBuffer.limit(finalOffset.toInt()) //Saftey issue
+    readBuffer.position(initialOffset.toInt()) //Saftey issue
+    readBuffer.limit(finalOffset.toInt()) //Saftey issue
 
-    while (byteBuffer.hasRemaining()) {
-        val expectedCrc = byteBuffer.get()
+    while (readBuffer.hasRemaining()) {
+        val expectedCrc = readBuffer.get()
 
         //val (encodedTotalLength, encodedTotalLengthBitCount, crc1) = byteBuffer.fromVlq()
-        val lengthData = byteBuffer.readSafety()?.fromVlq()
+        val lengthData = readBuffer.readSafety()?.fromVlq()
         //val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
-        val topicLengthData = byteBuffer.readSafety()?.fromVlq()
+        val topicLengthData = readBuffer.readSafety()?.fromVlq()
         //val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
         val topicMetadata = if (topicLengthData != null) {
-            byteBuffer.readSafety()?.getArraySlice(topicLengthData.first)
+            readBuffer.readSafety()?.getSafeArraySlice(topicLengthData.first)
         } else null
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
         if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics)) {
-            if (lengthData != null && (1 + lengthData.second + lengthData.first) <= byteBuffer.remaining()) {
+            if (lengthData != null && (1 + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
                 offset += (1 + lengthData.second + lengthData.first)
                 continue
             }
         }
         //val (keyLength, keyLengthBitCount, crc4) = byteBuffer.fromVlq()
-        val keyMetdata = byteBuffer.readSafety()?.fromVlq()
+        val keyMetdata = readBuffer.readSafety()?.fromVlq()
         // val (key, crc5) = byteBuffer.getSubsequence(keyLength)
         val keyData = if (keyMetdata != null) {
-            byteBuffer.readSafety()?.getBufferSlice(keyMetdata.first)
+            readBuffer.readSafety()?.getBufferSlice(keyMetdata.first)
         } else null
         // val (value, crc6) = byteBuffer.getSubsequence(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
         val valueData = if (lengthData != null && topicLengthData != null && keyMetdata != null) {
-            byteBuffer.readSafety()
+            readBuffer.readSafety()
                 ?.getBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetdata.second - keyMetdata.first)
         } else null
 
@@ -150,7 +155,7 @@ fun getRecords(
             if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
             } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
-                val abnormality = if (isEndOfFetch || byteBuffer.hasRemaining()) {
+                val abnormality = if (isEndOfFetch || readBuffer.hasRemaining()) {
                     GetRecordAbnormality.RecordsAfterTombstone
                 } else {
                     GetRecordAbnormality.StandardTombstone
@@ -186,20 +191,35 @@ class PuroConsumer(
     val streamDirectory: Path,
     serialisedTopicNames: List<String>,
     val logger: Logger,
-    val buffsize: Int = 8192,
+    val readBufferSize: Int = 8192,
+    val startPoint: ConsumerStart = ConsumerStart.Latest,
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) : Runnable {
     companion object {
         // This should be configurable?
         private val retryDelay = 10.milliseconds.toJavaDuration()
+
+        // I don't have very good intuition on this one, should be benchmarked
+        private val queueCapacity = 100_000
     }
 
     //TODO make this configurable:
-    var consumedSegment = getActiveSegment(streamDirectory)
-    var consumerOffset = 0L //First byte offset that hasn't been read
-    val readBuffer = ByteBuffer.allocate(buffsize)
+    //var _consumedSegment = getActiveSegment(streamDirectory)
+    var consumedSegmentOrder = when (startPoint) {
+        is ConsumerStart.StreamBeginning -> getLowestSegmentOrder(streamDirectory)
+        is ConsumerStart.Latest -> getLowestSegmentOrder(streamDirectory)
+    }
+
+    //First byte offset that hasn't been read
+    var consumerOffset = if (startPoint == ConsumerStart.Latest && consumedSegmentOrder != -1) {
+        Files.size(getConsumedSegmentPath())
+    } else {
+        0L
+    }
+    var currentConsumerLocked = consumedSegmentOrder == -1
+
+    val readBuffer = ByteBuffer.allocate(readBufferSize)
     var abnormalOffsetWindow: Pair<Long, Long>? = null
-    var currentConsumerLocked = false
 
     // PriorityBlockingQueue javadoc:
     // "Operations on this class make no guarantees about the ordering of elements with equal priority.
@@ -214,7 +234,7 @@ class PuroConsumer(
             })
         }
 
-    var segmentChangeQueue = PriorityBlockingQueue(0, compareConsumerSegmentPair)
+    var segmentChangeQueue = PriorityBlockingQueue(queueCapacity, compareConsumerSegmentPair)
     var subscribedTopics = serialisedTopicNames.map { it.toByteArray() }
 
     //fun stopListening() = watcher?.close()
@@ -222,18 +242,22 @@ class PuroConsumer(
     private val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
         .path(streamDirectory)
         .listener { event: DirectoryChangeEvent ->
+            // Diagnostic logs
+            // logger.info(event.path().toString())
+            // logger.info(event.eventType().toString())
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
                     //TODO cache this, no reason to recompute
-                    val currentSegmentOrder = getSegmentOrder(consumedSegment)
+                    //val currentSegmentOrder = getSegmentOrder(consumedSegment)
                     val incomingSegmentOrder = getSegmentOrder(event.path())
+                    val currentSegmentSize = Files.size(getConsumedSegmentPath())
 
-                    if (event.path() == consumedSegment) {
-                        segmentChangeQueue.offer(ConsumerSegmentEvent(Files.size(consumedSegment), currentSegmentOrder))
-                    } else if (incomingSegmentOrder > currentSegmentOrder) {
+                    if (event.path() == getSegmentPath(streamDirectory, consumedSegmentOrder)) {
+                        segmentChangeQueue.offer(ConsumerSegmentEvent(currentSegmentSize, consumedSegmentOrder))
+                    } else if (incomingSegmentOrder > consumedSegmentOrder) {
                         segmentChangeQueue.offer(
                             ConsumerSegmentEvent(
-                                Files.size(consumedSegment),
+                                currentSegmentSize,
                                 incomingSegmentOrder
                             )
                         )
@@ -253,22 +277,23 @@ class PuroConsumer(
         .build()
 
     override fun run() {
+        logger.info("Starting Consumer")
         Thread { watcher?.watch() }.start()
+        logger.info("Consumer Directory Watcher Configured")
         Thread {
             while (true) {
                 val (producerOffset, incomingSegmentOrder) = segmentChangeQueue.take()
-                val consumedSegmentOrder = getSegmentOrder(consumedSegment)
 
                 if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
-                    logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $incomingSegmentOrder")
+                    logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
                 } else if (incomingSegmentOrder == consumedSegmentOrder) {
                     onConsumedSegmentAppend(producerOffset)
                 } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
                     // The priority queue will ensure all records of order _N_ will be received before all records of
                     // order _N+1_
-                    val nextSegment = getSegment(streamDirectory, incomingSegmentOrder)
+                    val nextSegment = getSegmentPath(streamDirectory, consumedSegmentOrder + 1)
                     if (nextSegment != null) {
-                        consumedSegment = nextSegment
+                        consumedSegmentOrder++
                         currentConsumerLocked = false
                         onConsumedSegmentAppend(consumerOffset)
                     } else {
@@ -473,10 +498,10 @@ class PuroConsumer(
         }
     }
 
-    fun getStepCount(offsetDelta: Long) = (if (offsetDelta % buffsize == 0L) {
-        (offsetDelta / buffsize)
+    fun getStepCount(offsetDelta: Long) = (if (offsetDelta % readBufferSize == 0L) {
+        (offsetDelta / readBufferSize)
     } else {
-        (offsetDelta / buffsize) + 1
+        (offsetDelta / readBufferSize) + 1
     }).toInt()
 
     private fun standardRead(
@@ -494,14 +519,22 @@ class PuroConsumer(
 
         var lastAbnormality: GetRecordAbnormality? = null
         for (step in 0..<steps) {
+            val isLastBatch = (step == steps - 1)
+
             readBuffer.clear()
+            if (isLastBatch) readBuffer.limit((producerOffset % readBufferSize).toInt()) //Saftey!
+
             fileChannel.read(readBuffer)
             readBuffer.flip()
-            val isLastBatch = (step == steps - 1)
-            val (batchRecords, nextReadConsumerOffset, abnormality) = getRecords(
+
+            val (batchRecords, offsetChange, abnormality) = getRecords(
                 readBuffer,
-                readOffset,
-                producerOffset,
+                0,
+                if (isLastBatch) {
+                    producerOffset % readBufferSize
+                } else {
+                    readBufferSize.toLong()
+                },
                 subscribedTopics,
                 logger,
                 isEndOfFetch = isLastBatch
@@ -509,7 +542,7 @@ class PuroConsumer(
             lastAbnormality = abnormality
 
             readRecords.addAll(batchRecords)
-            readOffset = nextReadConsumerOffset
+            readOffset += offsetChange
 
             if (isLastBatch && abnormality == GetRecordAbnormality.Truncation) {
                 readAbnormalOffsetWindow = consumerOffset to producerOffset
@@ -533,8 +566,13 @@ class PuroConsumer(
         )
     }
 
-    private fun getConsumedSegmentChannel(): FileChannel {
-        return FileChannel.open(consumedSegment, StandardOpenOption.READ)
+    private fun getConsumedSegmentChannel(): FileChannel =
+        FileChannel.open(getConsumedSegmentPath(), StandardOpenOption.READ)
+
+    private fun getConsumedSegmentPath(): Path {
+        val segment = getSegmentPath(streamDirectory, consumedSegmentOrder)
+            ?: throw RuntimeException("This should never happen: non-existent segment requested for $consumedSegmentOrder")
+        return segment
     }
 
     // Consumer lock block: returns `false` if end-of-fetch abnormality

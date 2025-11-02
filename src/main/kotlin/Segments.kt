@@ -4,7 +4,7 @@ import kotlin.io.path.exists
 import kotlin.use
 
 const val FILE_EXTENSION = "puro"
-const val SEGMENT_PREFIX = "segment"
+const val SEGMENT_PREFIX = "stream"
 
 data class ConsumerSegmentEvent(
     val offset: Long,
@@ -23,24 +23,41 @@ fun getActiveSegment(streamDirectory: Path, asProducer: Boolean = false): Path {
         throw RuntimeException("Stream directory $streamDirectory does not exist")
     }
 
-    val topFoundSegment = Files.list(streamDirectory).use { stream ->
-        stream.filter { it.fileName.toString().matches(Regex("""${SEGMENT_PREFIX}\d+\.${FILE_EXTENSION}""")) }.max { p1, p2 ->
-            getSegmentOrder(
-                p1
-            ) - getSegmentOrder(p2)
-        }
+    val topFoundSegment = Files.list(streamDirectory).use { paths ->
+        paths.filter { it.fileName.toString().matches(Regex("""${SEGMENT_PREFIX}\d+\.${FILE_EXTENSION}""")) }
+            .max { p1, p2 ->
+                getSegmentOrder(
+                    p1
+                ) - getSegmentOrder(p2)
+            }
     }
 
     return if (topFoundSegment.isPresent) {
         topFoundSegment.get()
     } else if (asProducer) {
-        streamDirectory.resolve("$SEGMENT_PREFIX}0.${FILE_EXTENSION}").also { Files.createFile(it) }
+        streamDirectory.resolve("${SEGMENT_PREFIX}0.${FILE_EXTENSION}").also { Files.createFile(it) }
     } else {
         throw RuntimeException("No stream files exist at $streamDirectory")
     }
 }
 
-fun getSegment(streamDirectory: Path, segmentOrder: Int): Path? {
+fun getHighestSegmentOrder(streamDirectory: Path): Int {
+    if (!streamDirectory.exists()) {
+        throw RuntimeException("Stream directory $streamDirectory does not exist")
+    }
+    return Files.list(streamDirectory).use { paths -> paths.map { getSegmentOrder(it) }.min { a, b -> a - b } }
+        .orElse(-1)
+}
+
+fun getLowestSegmentOrder(streamDirectory: Path): Int {
+    if (!streamDirectory.exists()) {
+        throw RuntimeException("Stream directory $streamDirectory does not exist")
+    }
+    return Files.list(streamDirectory).use { paths -> paths.map { getSegmentOrder(it) }.max { a, b -> a - b } }
+        .orElse(-1)
+}
+
+fun getSegmentPath(streamDirectory: Path, segmentOrder: Int): Path? {
     return if (Files.exists(streamDirectory) && Files.exists(streamDirectory.resolve("$SEGMENT_PREFIX$segmentOrder.$FILE_EXTENSION"))) {
         streamDirectory.resolve("$SEGMENT_PREFIX$segmentOrder.$FILE_EXTENSION")
     } else null
