@@ -61,7 +61,7 @@ fun main() {
         }
         logger.info("Sending batch")
         producer.send(messages)
-        //Thread.sleep(1)
+        Thread.sleep(1000)
     }
 }
 

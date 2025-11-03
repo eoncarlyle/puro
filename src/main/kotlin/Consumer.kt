@@ -8,6 +8,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
+import kotlin.math.log
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
@@ -113,7 +114,7 @@ fun getRecords(
         val topicLengthData = readBuffer.readSafety()?.fromVlq()
         //val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
         val topicMetadata = if (topicLengthData != null) {
-            readBuffer.readSafety()?.getSafeArraySlice(topicLengthData.first)
+            readBuffer.getSafeArraySlice(topicLengthData.first)
         } else null
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
@@ -287,6 +288,7 @@ class PuroConsumer(
                 if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
                     logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
                 } else if (incomingSegmentOrder == consumedSegmentOrder) {
+                    logger.info("Incoming producer offset: ${producerOffset}")
                     onConsumedSegmentAppend(producerOffset)
                 } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
                     // The priority queue will ensure all records of order _N_ will be received before all records of
@@ -512,6 +514,7 @@ class PuroConsumer(
         // When I transitioned to returning values rather than carrying out side effects I needed to decide how to best
         // name the return variables that would be mapped to fields by the caller and I used a `read` as a prefix
         var readOffset = startingReadOffset
+        logger.info("Starting read offset $readOffset")
         val steps = getStepCount(producerOffset - readOffset)
 
         val readRecords = ArrayList<PuroRecord>()
@@ -522,8 +525,11 @@ class PuroConsumer(
             val isLastBatch = (step == steps - 1)
 
             readBuffer.clear()
-            if (isLastBatch) readBuffer.limit((producerOffset % readBufferSize).toInt()) //Saftey!
+            if (isLastBatch) {
+                readBuffer.limit(((producerOffset - readOffset) % readBufferSize).toInt()) //Saftey!
+            }
 
+            fileChannel.position(readOffset)
             fileChannel.read(readBuffer)
             readBuffer.flip()
 
@@ -531,7 +537,7 @@ class PuroConsumer(
                 readBuffer,
                 0,
                 if (isLastBatch) {
-                    producerOffset % readBufferSize
+                    (producerOffset - readBufferSize) % readBufferSize
                 } else {
                     readBufferSize.toLong()
                 },
@@ -542,6 +548,7 @@ class PuroConsumer(
             lastAbnormality = abnormality
 
             readRecords.addAll(batchRecords)
+            logger.info("Offset change $offsetChange")
             readOffset += offsetChange
 
             if (isLastBatch && abnormality == GetRecordAbnormality.Truncation) {
@@ -553,6 +560,8 @@ class PuroConsumer(
                 break
             }
         }
+
+        logger.info("Final read offset $readOffset")
 
         return StandardRead(
             readOffset,

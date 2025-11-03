@@ -115,4 +115,9 @@ class ConsumerTest {
         println(hardTransitionSubrecordLength(100))
         println(98.toVlqEncoding().capacity())
     }
+
+    @Test
+    fun `Get Record`() {
+        getRecord(ByteBuffer.wrap(byteArrayOf(1)))
+    }
 }
