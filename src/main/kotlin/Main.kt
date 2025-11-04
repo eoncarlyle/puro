@@ -1,7 +1,9 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
+import java.net.URI
 import java.nio.channels.FileChannel
+import java.nio.file.FileSystems
 import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.io.path.deleteIfExists
@@ -49,7 +51,7 @@ fun main() {
         println("${String(it.topic)}/${String(it.key.array())}/${String(it.value.array())}")
     }
     consumer.run()
-    Thread.sleep(1000)
+    //Thread.sleep(1)
     var increment = 0
     repeat(5) {
         val messages = (0..<10).map {
@@ -61,7 +63,7 @@ fun main() {
         }
         logger.info("Sending batch")
         producer.send(messages)
-        Thread.sleep(1000)
+        //Thread.sleep(100)
     }
 }
 

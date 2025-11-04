@@ -48,13 +48,23 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Development Log
 
+### 2025-11-03
+New issue that I hadn't thought of until now - if a single message is split across more than two messages I don't 
+think that this is interpreted as a normal continuation - this could be pretty easily tested with a comically small 
+buffer size.
+
+Something close to explicit synchronisation is required to solve the waiting consumer problem.
+
+Throwing any exception is of course a white flag but the exception thrown in the `val (producerOffset, 
+incomingSegmentOrder)` definition really doesn't have better alternatives really. This _should_ be an illegal state. 
+The starter `ConsumerSegmentEvent` event is meant to get a start-from-beginning consumer caught up if the producer has 
+already finished creating events (at least for a moment) by the time the consumer gets ready to go.
+
 ### 2025-11-01
 A quick-and-dirty way to do wait-on-start is more or less what we have going on now, sorta. Also, it takes hundreds of 
 milliseconds for the consumer `DirectoryWatcher` to be ready to observe so it is easy for the producer to rocket 
 through a bunch of writes and then as far as the consumer is concerned no one has written to the stream yet. This really
 is not how the consumers should be behaving.
-
-
 
 ### 2025-10-26
 `1 + ceil(log2(y)) + y = x` doesn't appear to have a closed-form solution, so the decrementing option really isn't that

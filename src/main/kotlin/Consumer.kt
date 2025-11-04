@@ -8,7 +8,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
-import kotlin.math.log
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
@@ -128,12 +127,11 @@ fun getRecords(
         val keyMetdata = readBuffer.readSafety()?.fromVlq()
         // val (key, crc5) = byteBuffer.getSubsequence(keyLength)
         val keyData = if (keyMetdata != null) {
-            readBuffer.readSafety()?.getBufferSlice(keyMetdata.first)
+            readBuffer.getSafeBufferSlice(keyMetdata.first)
         } else null
         // val (value, crc6) = byteBuffer.getSubsequence(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
         val valueData = if (lengthData != null && topicLengthData != null && keyMetdata != null) {
-            readBuffer.readSafety()
-                ?.getBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetdata.second - keyMetdata.first)
+            readBuffer.getSafeBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetdata.second - keyMetdata.first)
         } else null
 
         // The else branch isn't advancing the offset because it is possible that this is the next batch
@@ -222,16 +220,36 @@ class PuroConsumer(
     val readBuffer = ByteBuffer.allocate(readBufferSize)
     var abnormalOffsetWindow: Pair<Long, Long>? = null
 
+    private fun getSortPriority(event: ConsumerSegmentEvent, tiebreaker: Boolean = false) = when (event) {
+        is ConsumerSegmentEvent.Standard -> if (tiebreaker) {
+            event.segmentOrder.toLong()
+        } else {
+            event.offset
+        }
+
+        else -> -1L
+    }
+
+    private fun getSecondPriority(event: ConsumerSegmentEvent) = when (event) {
+        is ConsumerSegmentEvent.Standard -> event.offset
+        else -> -1
+    }
+
     // PriorityBlockingQueue javadoc:
     // "Operations on this class make no guarantees about the ordering of elements with equal priority.
     // If you need to enforce an ordering, you can define custom classes or comparators that use a secondary key to
     // break ties in primary priority values"
     val compareConsumerSegmentPair =
         Comparator<ConsumerSegmentEvent> { p1, p2 ->
-            return@Comparator (if (p1.segmentOrder != p2.segmentOrder) {
-                p1.segmentOrder - p2.segmentOrder
+            // This could be better
+            return@Comparator (if ((p1 is ConsumerSegmentEvent.Standard) and (p2 is ConsumerSegmentEvent.Standard)) {
+                if ((p1 as ConsumerSegmentEvent.Standard).segmentOrder != (p2 as ConsumerSegmentEvent.Standard).segmentOrder) {
+                    (getSortPriority(p1) - getSortPriority(p2)).toInt()
+                } else {
+                    (getSortPriority(p1, true) - getSortPriority(p2, true)).toInt()
+                }
             } else {
-                (p1.offset - p2.offset).toInt()
+                (getSortPriority(p1, true) - getSortPriority(p2, true)).toInt()
             })
         }
 
@@ -244,24 +262,29 @@ class PuroConsumer(
         .path(streamDirectory)
         .listener { event: DirectoryChangeEvent ->
             // Diagnostic logs
-            // logger.info(event.path().toString())
-            // logger.info(event.eventType().toString())
+            logger.info(event.path().toString())
+            logger.info(event.eventType().toString())
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
                     //TODO cache this, no reason to recompute
                     //val currentSegmentOrder = getSegmentOrder(consumedSegment)
                     val incomingSegmentOrder = getSegmentOrder(event.path())
-                    val currentSegmentSize = Files.size(getConsumedSegmentPath())
-
-                    if (event.path() == getSegmentPath(streamDirectory, consumedSegmentOrder)) {
-                        segmentChangeQueue.offer(ConsumerSegmentEvent(currentSegmentSize, consumedSegmentOrder))
-                    } else if (incomingSegmentOrder > consumedSegmentOrder) {
+                    if (incomingSegmentOrder == consumedSegmentOrder) {
                         segmentChangeQueue.offer(
-                            ConsumerSegmentEvent(
-                                currentSegmentSize,
-                                incomingSegmentOrder
+                            ConsumerSegmentEvent.Standard(
+                                Files.size(getConsumedSegmentPath()),
+                                consumedSegmentOrder
                             )
                         )
+                    } else if (incomingSegmentOrder > consumedSegmentOrder) {
+                        val incomingSegment = getSegmentPath(streamDirectory, incomingSegmentOrder)
+                        if (incomingSegment == null) {
+                            logger.error("Phantom incoming segment of order $incomingSegmentOrder")
+                        } else {
+                            segmentChangeQueue.offer(
+                                ConsumerSegmentEvent.Standard(Files.size(incomingSegment), incomingSegmentOrder)
+                            )
+                        }
                     } else if (incomingSegmentOrder == -1) {
                         logger.warn("Modify event for non-segment path ${event.path()} recorded")
                     } else {
@@ -281,14 +304,32 @@ class PuroConsumer(
         logger.info("Starting Consumer")
         Thread { watcher?.watch() }.start()
         logger.info("Consumer Directory Watcher Configured")
+        if (startPoint == ConsumerStart.StreamBeginning) {
+            segmentChangeQueue.put(ConsumerSegmentEvent.Starter)
+        }
+
         Thread {
             while (true) {
-                val (producerOffset, incomingSegmentOrder) = segmentChangeQueue.take()
+                val event = segmentChangeQueue.take()
+                val (producerOffset, incomingSegmentOrder) = when (event) {
+                    is ConsumerSegmentEvent.Standard -> event.offset to event.segmentOrder
+                    is ConsumerSegmentEvent.Starter -> {
+                        if (consumerOffset != 0L) continue
+
+                        val lowestSegmentOrder = getLowestSegmentOrder(streamDirectory) //This needs to block until it
+                        // sees a segment come in
+
+                        val path = getSegmentPath(streamDirectory, lowestSegmentOrder)
+                            ?: throw RuntimeException("Illegal ConsumerSegmentEvent: no segment present at order $lowestSegmentOrder")
+
+                        Files.size(path) to lowestSegmentOrder
+                    }
+                }
 
                 if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
                     logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
                 } else if (incomingSegmentOrder == consumedSegmentOrder) {
-                    logger.info("Incoming producer offset: ${producerOffset}")
+                    logger.info("Incoming producer offset: $producerOffset")
                     onConsumedSegmentAppend(producerOffset)
                 } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
                     // The priority queue will ensure all records of order _N_ will be received before all records of
@@ -297,7 +338,7 @@ class PuroConsumer(
                     if (nextSegment != null) {
                         consumedSegmentOrder++
                         currentConsumerLocked = false
-                        onConsumedSegmentAppend(consumerOffset)
+                        onConsumedSegmentAppend(producerOffset)
                     } else {
                         logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
                     }
@@ -437,7 +478,6 @@ class PuroConsumer(
     }
 
     private fun onHardTransitionCleanup(transition: FetchSuccess.HardTransition) {
-
         val subrecordLengthMetaLengthSum = transition.abnormalOffsetWindowStop - transition.abnormalOffsetWindowStart
         getConsumedSegmentChannel().use { channel ->
             var lock: FileLock?
@@ -537,7 +577,7 @@ class PuroConsumer(
                 readBuffer,
                 0,
                 if (isLastBatch) {
-                    (producerOffset - readBufferSize) % readBufferSize
+                    (producerOffset - readOffset) % readBufferSize
                 } else {
                     readBufferSize.toLong()
                 },

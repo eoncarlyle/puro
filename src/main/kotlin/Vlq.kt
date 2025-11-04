@@ -57,6 +57,8 @@ fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
     return String(array) to crc8(array)
 }
 
+fun ByteBuffer.getSafeBufferSlice(length: Int) = if (hasRemaining() && this.remaining() >= length) { this.getBufferSlice(length) } else null
+
 fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
     val array = ByteArray(length)
     this.get(array, 0, array.size)
