@@ -1,9 +1,7 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
-import java.net.URI
 import java.nio.channels.FileChannel
-import java.nio.file.FileSystems
 import java.nio.file.Path
 import kotlin.io.path.Path
 import kotlin.io.path.deleteIfExists
@@ -47,7 +45,7 @@ fun main() {
     Path("/tmp/puro/segment0.puro").deleteIfExists()
     val producer = PuroProducer(Path("/tmp/puro"), 10)
     val logger = LoggerFactory.getLogger("MainKt")
-    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger, startPoint = ConsumerStart.StreamBeginning) {
+    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger, startPoint = ConsumerStartPoint.StreamBeginning) {
         println("${String(it.topic)}/${String(it.key.array())}/${String(it.value.array())}")
     }
     consumer.run()

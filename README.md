@@ -8,7 +8,7 @@ This is probably wildly ambitious but this is an attempt to make an 'SQLite of e
 running Apache Kafka when producers and consumers are not separated by a network. Rather than any daemonised processed,
 there will just be a log format and client libraries for producers and consumers.
 
-Also - the `ByteBuffer.getArraySlice` does nothing to guard against when `length` is smaller than the remaining number 
+Also - the `ByteBuffer.getArraySlice` does nothing to guard against when `length` is smaller than the remaining number
 of bytes. Same applies for `ByteBuffer.getBufferSlice`, can reproduce this pretty easily.
 
 `getRecords` was incorrectly using the offsets as if it was operating on the active segment file stream rather than the
@@ -17,14 +17,16 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 ## Action Items
 
 - [ ] Make, test working consumers
-    - [x] Fetch process buffer check: I think not all opertaions will work
-    - [x] Event loop
-    - [x] Consumer result types
-    - [x] Final message cleanup
-    - [x] `onHardProducerTransition`
-    - [x] `onConsumedSegmentTransition`
-- [ ] `ByteBuffer.getArraySlice` and `ByteBuffer.getBufferSlice` fixes
-- [ ] Handling consumer starts with non-current consumer start
+  - [x] Fetch process buffer check: I think not all opertaions will work
+  - [x] Event loop
+  - [x] Consumer result types
+  - [x] Final message cleanup
+  - [x] `onHardProducerTransition`
+  - [x] `onConsumedSegmentTransition`
+- [ ] Stale and spurious segment problems
+  - If a segment is tombstoned, exclude it from relevant `Segments.kt` places
+  - Same as above except for spurious segments (when a segment of lower order than the highest found
+- [ ] `ByteBuffer.getArraySlice` and `ByteBuffer.getBufferSlice` fixes one is untombstoned)
 - [ ] Active segment transition race condition handling
 - [ ] (Small) replace the hardcoded 1s with reference to current CRC size (in case it changes)
 - [ ] Check if the nonzero `consumerOffset` initialisation will actually work (ragged start problem)
@@ -48,31 +50,46 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Development Log
 
+### 2025-11-06
+
+The most robust way to deal with wait-on-start regardless of `startPoint` is not with a second `ConsumerSegmentEvent`
+but rather to check for the existence of a segment before the watcher is started, and one the file exists to manually
+place an `segmentChangeQueue` event. Either `getLowestSegmentOrder` or `getHighestSegmentOrder` could be checked and I
+don't think it matters?
+
+As remarked in a comment, the answer to 'what happens if something is deleted at the worst time' in
+`watcherPreInitialisation` isn't super great, and it isn't like the consumer is able to drop some 'don't delete any
+files while I get my bearings'. There are limits to how defensive I can be but at the same time segments being deleted
+as part of the operation of a future steward could be something to defend against? Will need to think on this one.
+
 ### 2025-11-03
-New issue that I hadn't thought of until now - if a single message is split across more than two messages I don't 
-think that this is interpreted as a normal continuation - this could be pretty easily tested with a comically small 
-buffer size.
+
+New issue that I hadn't thought of until now - if a single message is split across more than two messages I don't think
+that this is interpreted as a normal continuation - this could be pretty easily tested with a comically small buffer
+size.
 
 Something close to explicit synchronisation is required to solve the waiting consumer problem.
 
-Throwing any exception is of course a white flag but the exception thrown in the `val (producerOffset, 
-incomingSegmentOrder)` definition really doesn't have better alternatives really. This _should_ be an illegal state. 
-The starter `ConsumerSegmentEvent` event is meant to get a start-from-beginning consumer caught up if the producer has 
-already finished creating events (at least for a moment) by the time the consumer gets ready to go.
+Throwing any exception is of course a white flag but the exception thrown in the
+`val (producerOffset,  incomingSegmentOrder)` definition really doesn't have better alternatives really. This _should_
+be an illegal state. The starter `ConsumerSegmentEvent` event is meant to get a start-from-beginning consumer caught up
+if the producer has already finished creating events (at least for a moment) by the time the consumer gets ready to go.
 
 ### 2025-11-01
-A quick-and-dirty way to do wait-on-start is more or less what we have going on now, sorta. Also, it takes hundreds of 
-milliseconds for the consumer `DirectoryWatcher` to be ready to observe so it is easy for the producer to rocket 
-through a bunch of writes and then as far as the consumer is concerned no one has written to the stream yet. This really
-is not how the consumers should be behaving.
+
+A quick-and-dirty way to do wait-on-start is more or less what we have going on now, sorta. Also, it takes hundreds of
+milliseconds for the consumer `DirectoryWatcher` to be ready to observe so it is easy for the producer to rocket through
+a bunch of writes and then as far as the consumer is concerned no one has written to the stream yet. This really is not
+how the consumers should be behaving.
 
 ### 2025-10-26
+
 `1 + ceil(log2(y)) + y = x` doesn't appear to have a closed-form solution, so the decrementing option really isn't that
 bad. (But that doesn't _exactly_ appear to be the relevant function? Much to consider
 
-
 ### 2025-10-25
-How much sense, actually, does it make for the consumer to _create the first segment if it doesn't exist_ I mean in 
+
+How much sense, actually, does it make for the consumer to _create the first segment if it doesn't exist_ I mean in
 isolation that already sounds pretty bad but, more relevant for work on the consumer, it sets up inconsistent behaviour
 for the consumer. It seemed like it would be annoying to do but apparently things aren't so bad but I could have null
 active segment behaviour to denote an active segment that hasn't been confirmed yet.
@@ -96,18 +113,18 @@ The consumer waiting rather than just creating the segment on start is marked as
 
 ```kotlin
 val subrecordLength =
-  encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+    encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
 val encodedTotalLength = subrecordLength.toVlqEncoding()
 val recordBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + subrecordLength)
 
 private data class SerialisedPuroRecord(
-  val messageCrc: Byte,
-  val encodedTotalLength: ByteBuffer,
-  val encodedTopicLength: ByteBuffer,
-  val encodedTopic: ByteArray,
-  val encodedKeyLength: ByteBuffer,
-  val key: ByteBuffer,
-  val value: ByteBuffer
+    val messageCrc: Byte,
+    val encodedTotalLength: ByteBuffer,
+    val encodedTopicLength: ByteBuffer,
+    val encodedTopic: ByteArray,
+    val encodedKeyLength: ByteBuffer,
+    val key: ByteBuffer,
+    val value: ByteBuffer
 )
 ```
 
@@ -116,11 +133,11 @@ necessarily be `0x01`. The key length, key, and value aren't important and can b
 know what the length of `recordBuffer` will be, but rephrasing in math terms:
 
 ```text
-subrecordLength = 1 + 1 + messageTailLength 
+subrecordLength = 1 + 1 + messageTailLength
 messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
 ```
 
-Where `messageTailLength` is `encodedKeyLength.capacity() + keyLength + valueLength`. The smallest capacity possible is 
+Where `messageTailLength` is `encodedKeyLength.capacity() + keyLength + valueLength`. The smallest capacity possible is
 1, because even expressing a length of zero requires one byte. This is a profoundly cringe way to do this but I could
 just decrement until I hit the answer but every fibre in my body tells me that this is a solveable nonlinear equation. I
 think that a function in `Vlq` gives the answer:
@@ -129,38 +146,40 @@ think that a function in `Vlq` gives the answer:
 fun ceilingDivision(dividend: Int, divisor: Int): Int = (dividend + divisor - 1) / divisor
 
 fun Int.toVlqEncoding(): ByteBuffer {
-  //...
-  val bitsReq = Int.SIZE_BITS - this.countLeadingZeroBits()
-  val bytesReq = ceilingDivision(bitsReq, 7)
-  //...
+    //...
+    val bitsReq = Int.SIZE_BITS - this.countLeadingZeroBits()
+    val bytesReq = ceilingDivision(bitsReq, 7)
+    //...
 }
 ```
-However - `maxVlqInt` can be expressed in 4 bytes (which, of course, I learned and forgot in CSCI 1933). It's not that 
-an inverse function couldn't be created, but if a logarithm needs to be accessed for the equivalent of the 
+
+However - `maxVlqInt` can be expressed in 4 bytes (which, of course, I learned and forgot in CSCI 1933). It's not that
+an inverse function couldn't be created, but if a logarithm needs to be accessed for the equivalent of the
 `countLeadingZeroBits` we're in a bad spot. There are four possible answers based of the integer range so there's no
 reason not to just to hardcode those in. That's definitely the way to go.
 
-
 ### 2025-10-22
-`fetch` is nearly a pure function at this point. The reason I did this is that I want as few functions as possible 
+
+`fetch` is nearly a pure function at this point. The reason I did this is that I want as few functions as possible
 carrying out field modifications. The `ConsumerResult` can handle if there are records after the tombstone, so that
-really doesn't need to be baked into a property. The same cannot be said about the abnormal offset window. That is 
+really doesn't need to be baked into a property. The same cannot be said about the abnormal offset window. That is
 something that needs to be handled by the next fetch.
 
-What should definitely be tested is successive hard transitions that include a batch or two of items that are fine 
+What should definitely be tested is successive hard transitions that include a batch or two of items that are fine
 before the truncated message. Following these with some continuations would make sense. After all of this work on side
 conditions, there isn't much of an excuse to not eke out all the edge cases with how testable this is.
 
 ### 2025-10-20
+
 The consumer's current segment is not always the active segment, so I am now calling the currently consumed segment just
 the 'consumed segment'.
 
 Now that we have the segment tombstones, I need to consider how to best handle setting `currentConsumerLocked`. These, I
 think, should be handled in a similar way to the `FetchSuccess.HardTransition`. Even if there is nothing to 'clean' up,
-there still need to be actions taken. We also need to handle the case where further messages are placed after a 
-tombstone and re-tombstoning it (probably checking first to make sure another consumer hasn't done the same, using the 
-same 'fixed control message size' trick. Any messages between tombstones are illegal but I don't feel the need to
-zero them out unlike hard transitions where it really matters.
+there still need to be actions taken. We also need to handle the case where further messages are placed after a
+tombstone and re-tombstoning it (probably checking first to make sure another consumer hasn't done the same, using the
+same 'fixed control message size' trick. Any messages between tombstones are illegal but I don't feel the need to zero
+them out unlike hard transitions where it really matters.
 
 I'm going to sleep on it, but I think it will look like:
 
@@ -169,11 +188,16 @@ sealed class FetchSuccess() {
     class CleanFetch() : FetchSuccess()
     class CleanFinish() : FetchSuccess()
     class SimpleRecordsAfterTombstone() : FetchSuccess()
-    class HardTransition(val abnormalOffsetWindowStart: Long, val abnormalOffsetWindowStop: Long, val recordsAfterTombstone: Bool) : FetchSuccess()
+    class HardTransition(
+        val abnormalOffsetWindowStart: Long,
+        val abnormalOffsetWindowStop: Long,
+        val recordsAfterTombstone: Bool
+    ) : FetchSuccess()
 }
 ```
 
 ### 2025-10-21
+
 I am making an implicit assumption that there can only be either a truncation abnormality or a records after segment
 abnormality. I think this is a decent assumption - you could make an argument that a segment tombstone inside the
 segment would get clobbered, but that is true regardless and we're assuming clients will not add or delete bytes inside
@@ -183,29 +207,28 @@ Left some TODOS for re-tombstoning
 
 ### 2025-10-19
 
-> There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock,
-> the active segment could change, this has been marked on the README as 'Active segment transition race
-> condition handling'; Best way may be to read if 'tombstone'
+> There is a bit of an issue here because between calling `getActiveSegment()` and acquiring the lock, the active
+> segment could change, this has been marked on the README as 'Active segment transition race condition handling'; Best
+> way may be to read if 'tombstone'
 
-This is written in `Consumer#withConsmerLock`. It is wrong: a consumer that is working on segment _N_ and observes
-that segment _N_ is the active segment should process all messages before moving over to _N+1_. The happy
-path is something like
+This is written in `Consumer#withConsmerLock`. It is wrong: a consumer that is working on segment _N_ and observes that
+segment _N_ is the active segment should process all messages before moving over to _N+1_. The happy path is something
+like
 
-1) The consumer is on _N_
-2) The following takes place with non-deterministic ordering
-    - The consumer receives word of a modify/create `DirectoryChangeEvent` for _N+1_
-    - The consumer reads a segment tombstone on _N_
-3) The consumer observes and assigns the new active segment as _N+1_
+1. The consumer is on _N_
+2. The following takes place with non-deterministic ordering
+   - The consumer receives word of a modify/create `DirectoryChangeEvent` for _N+1_
+   - The consumer reads a segment tombstone on _N_
+3. The consumer observes and assigns the new active segment as _N+1_
 
 Until the consumer reads a tombstone message on _N_, the consumer should not re-assign the observed active segment. This
 is the means by which the consumers can protect against spurious segment creation.
 
 If the consumer reads the tombstone before a new segment is created, the active segment is undetermined. The consumer
-knows what the next observed active segment _will_ be - _N+1_. In the case where the producer rolls the segment over
-and establishes _N+2_ as the global active segment before the consumer observes the creation of _N+1_, the
-consumer still needs to read through all of _N+1_ first. What pretty obviously follows from this is the need for some
-priority queue. The consumer needs to take _N_ events
-before _N+1_ events. 
+knows what the next observed active segment _will_ be - _N+1_. In the case where the producer rolls the segment over and
+establishes _N+2_ as the global active segment before the consumer observes the creation of _N+1_, the consumer still
+needs to read through all of _N+1_ first. What pretty obviously follows from this is the need for some priority queue.
+The consumer needs to take _N_ events before _N+1_ events.
 
 So that more or less builds the consumer state machine. The _producer_ at this point needs one other step. The producer
 should determine if the last message was a segment tombstone before writing. I don't _think_ there is an issue acquiring
@@ -218,14 +241,14 @@ than crc, the 'total length' field itself, and reverse-encoded length) is more a
 
 ### 2025-10-15
 
-While my intuition was correct on the producer offset, the consumer offset was wrong for a symetric reason: my
-intention was to begin at the current consumer offset, but nothing was actually enforcing that in the code.
+While my intuition was correct on the producer offset, the consumer offset was wrong for a symetric reason: my intention
+was to begin at the current consumer offset, but nothing was actually enforcing that in the code.
 
 ### 2025-10-13
 
-I am 75% sure that the bug is that the consumer does not stop at the incoming consumer offset (there is no current
-limit set to actually accomplish this), so the consumer will catch up with the state of the file rather than where it
-was 'supposed' to be for the incoming offset. The only thing that gives me pause is that `b` in the following takes the
+I am 75% sure that the bug is that the consumer does not stop at the incoming consumer offset (there is no current limit
+set to actually accomplish this), so the consumer will catch up with the state of the file rather than where it was
+'supposed' to be for the incoming offset. The only thing that gives me pause is that `b` in the following takes the
 value of 800 which doesn't make sense for the failing final offset of 1120.
 
 ```kotlin
@@ -243,13 +266,11 @@ queue vs. setting the offset to the current segment file size.
 ### 2025-10-10
 
 If the producers are producing faster than the consumers can consume I think the logic is completely broken with the
-callback, so I will need to build some simple event loop and keep track of producer offsets. Also, if the a message was
+callback, so I will need to build some simple event loop and keep track of producer offsets. Also, if a message was
 truncated, but we do have the length of the message that gives us a great hint about hard producer resets, and so may be
 worth keeping. Also, as of the current commit the mechanism for hard producer transition will only work if there is a
-live consumer. This wouldn't be true if the
-messages had inverted length as the last field, but that can probably wait. There are also no current affordances for
-controll
-messages.
+live consumer. This wouldn't be true if the messages had inverted length as the last field, but that can probably wait.
+There are also no current affordances for controll messages.
 
 ### 2025-10-08-1
 
@@ -257,19 +278,17 @@ You _have_ to fix the fact that the consumer and producer have entirely differen
 method is probably better, but this is very confusing.
 
 Okay - a 'fetch interior' record batch is an 8k or smaller read buffer inside of a fetch. The final round of
-deserialisation
-is the trickiest and will not only involve the file locking trick below but also something of a lookahead: without some
-ceiling on batches where we round down to the nearest message boundary (and, well maybe even _with_ that) we don't want
-perfectly intact messages on large writes to be discarded just because they fall across a fetch boundary. This means
-that
-the consumer needs to handle messages across read buffers similarly to messages cut across fetches. If the length and
-CRCs match, then the consumer is free to keep on going. But if it _fails_ the CRC check, then the consumers will need to
-race to zero out the last truncated message of the previous fetch.
+deserialisation is the trickiest and will not only involve the file locking trick below but also something of a
+lookahead: without some ceiling on batches where we round down to the nearest message boundary (and, well maybe even
+_with_ that) we don't want perfectly intact messages on large writes to be discarded just because they fall across a
+fetch boundary. This means that the consumer needs to handle messages across read buffers similarly to messages cut
+across fetches. If the length and CRCs match, then the consumer is free to keep on going. But if it _fails_ the CRC
+check, then the consumers will need to race to zero out the last truncated message of the previous fetch.
 
 If there is a legal message in the first segment of the next fetch, consumers keep doing what they are doing. The
 nightmare scenario would be fetch _N_ ending with a truncated message, fetch _N+1_ starting with a truncated message
-followed by legal messages that don't look legal because the truncated message has thrown every length off. _That_ is
-as situation where the messages ending with reverse length would save us, because then consumers could read in reverse
+followed by legal messages that don't look legal because the truncated message has thrown every length off. _That_ is as
+situation where the messages ending with reverse length would save us, because then consumers could read in reverse
 order until they find the last illegal message and zero it out.
 
 Given that this is theoretically solvable, I am more comfortable saying that an illegal fetch start after an illegal
@@ -278,11 +297,11 @@ fetch end is irrecoverable.
 ### 2025-10-08-0
 
 While I've done more thinking about incomplete message updates from producers, sitting down to write the consumer
-implementation has made me think about how if a producer writes 100+ Mb of messages in one go we will _not_ want to
-read the whole thing into memory. I haven't yet put a ceiling on write sizes but will need to do so eventually. But
-anyways apparently people like using 8k read buffers (there is some empirical work backing this). As far as
-disambiguating failing writes from incomplete writes, Jesse disappointingly said that it was out of is wheelhouse so
-my search continues on this. But we'll be forced to handle this for the batched reads on the consumer.
+implementation has made me think about how if a producer writes 100+ Mb of messages in one go we will _not_ want to read
+the whole thing into memory. I haven't yet put a ceiling on write sizes but will need to do so eventually. But anyways
+apparently people like using 8k read buffers (there is some empirical work backing this). As far as disambiguating
+failing writes from incomplete writes, Jesse disappointingly said that it was out of is wheelhouse so my search
+continues on this. But we'll be forced to handle this for the batched reads on the consumer.
 
 One thing of note is that if the reader knew when the writer lock was relinquished that would allow the reader to
 distinguish this. Note that if a consumer can access the write lock around the offending segment it is necessarily the
@@ -306,18 +325,18 @@ offset change followed by another substantial offset change. Thresholds on this 
 Relevant manpages
 
 - MacOS
-    - `man 2 kevent`
-    - `man 2 open`
-    - `man 2 write`
-    - `man 2 fcntl`
-    - `man 9 vnode`
-    - `man 7 fsevents`
+  - `man 2 kevent`
+  - `man 2 open`
+  - `man 2 write`
+  - `man 2 fcntl`
+  - `man 9 vnode`
+  - `man 7 fsevents`
 - Linux
-    - `man 7 inotify`
-    - `man 7 fsnotify`
-    - `man 7 fanotify`
-    - `man 2 write`
-    - `man 2 pwrite`
+  - `man 7 inotify`
+  - `man 7 fsnotify`
+  - `man 7 fanotify`
+  - `man 2 write`
+  - `man 2 pwrite`
 
 ### 2025-10-06-1
 
@@ -350,9 +369,9 @@ neccessary for the most recent checkpoint to truly be the last good message, but
 down on syscalls by only writing the most recent message returned from a run would be possible, or every _M_ messages.
 It doesn't really matter as long as the process of doing a full file scan is prevented.
 
-Without a consumer operating at some point on the stream to populate the index, the first producer can't assume that
-any valid messages are on the stream, so they have to scan through the whole stream. This is a reason to keep segments
-on the shorter side, but without consumers there also isn't a good reason to even operate the stream in the first place.
+Without a consumer operating at some point on the stream to populate the index, the first producer can't assume that any
+valid messages are on the stream, so they have to scan through the whole stream. This is a reason to keep segments on
+the shorter side, but without consumers there also isn't a good reason to even operate the stream in the first place.
 
 Two other notes about consumers
 
@@ -371,8 +390,8 @@ of topics) that would effectively say 'the message is X bytes long, ignore it'. 
 locking a little more complicated: the producer may have to 'rewind' a little bit, and the reader's can't lock the
 entire file otherwise producers couldn't 'rewind': we don't a priori know the size of messages.
 
-Also, there should be some message size ceiling where batches are broken up on the consumer side to prevent someone
-from ramming a massive message
+Also, there should be some message size ceiling where batches are broken up on the consumer side to prevent someone from
+ramming a massive message
 
 As far as an example of results types go, Rust's [ErrorKind](https://doc.rust-lang.org/std/io/enum.ErrorKind.html) seems
 like a workable example.
@@ -392,10 +411,10 @@ definitely makes sense); clients should define if the consumer should return aft
 something for the future.
 
 I just realised there is something of a 'spurious segment' problem: if the listener gets a file creation event for a
-.puro file but it can demonstrate that there is not a segment tombstone on the current segment, that is something
-that should be logged. The thing this defends against is accidental creation of a segment file that was not created by
-a Puro 'steward'. When a producer is starting up it needs to be congnisant of spurious segments. The producers are not
-in a good spot to do anything about this but consumers will and stewards may have directory listening capabilities. If a
+.puro file but it can demonstrate that there is not a segment tombstone on the current segment, that is something that
+should be logged. The thing this defends against is accidental creation of a segment file that was not created by a Puro
+'steward'. When a producer is starting up it needs to be congnisant of spurious segments. The producers are not in a
+good spot to do anything about this but consumers will and stewards may have directory listening capabilities. If a
 consumer sees a new segment and then checks that it a) is at the end of it's currently active segment and b) a segment
 tombstone has not been placed then it could place a spurious segment tombstone onto the spurious topic. Producers can/
 should be setup such that if there is a segment without a segment tombstone of lower order than the highest order
@@ -405,9 +424,9 @@ active consumers, the producer cannot start. But in this case the
 
 I do not think that active consumers will really be impacted by this. They only respond to a segment tombstone, and the
 producers are not rotating segments on their own volition. The steward that places the segment tombstone could place a
-spurious segment tombstone on the spurious segment before forcing a producer rollover - order is important here, but
-it is also pretty easy to establish. Ultimately this is congruent with many _Little Book of Sempahores_ problems, but
-files are of course more complicated than sempahores just because of partial and nonexclusive file locking.
+spurious segment tombstone on the spurious segment before forcing a producer rollover - order is important here, but it
+is also pretty easy to establish. Ultimately this is congruent with many _Little Book of Sempahores_ problems, but files
+are of course more complicated than sempahores just because of partial and nonexclusive file locking.
 
 ### 2025-10-02
 
@@ -468,24 +487,21 @@ carries out `rollover()`, but a) that should be on the steward and b) it will in
 
 Thought that I just had on rollover detection: because all writes append, a writer knows when it aquires a lock that the
 previous record will not change out from under it. Also, with only one writer at a time and shared read locks, it
-shouldn't
-be an issue to acquire a read lock within the write lock to check for rollover before write.
+shouldn't be an issue to acquire a read lock within the write lock to check for rollover before write.
 
 ### 2025-09-29
 
-The incremental CRC calculations were introducing the zero calculation twice.
-There are a couple of places where I am returning an empty result or null when something invalid happens.
-Result types should be used instead, but probably not the full Arrow result type just for dependency management reasons.
-It wouldn't even be that bad of an idea to provide an extension function in another Gradle module that could do
-translation,
-but at this point I should read some ways that F#/Rust/Haskell libraries design result types for operations like these
+The incremental CRC calculations were introducing the zero calculation twice. There are a couple of places where I am
+returning an empty result or null when something invalid happens. Result types should be used instead, but probably not
+the full Arrow result type just for dependency management reasons. It wouldn't even be that bad of an idea to provide an
+extension function in another Gradle module that could do translation, but at this point I should read some ways that
+F#/Rust/Haskell libraries design result types for operations like these
 
 ### 2025-09-28
 
 `ConsumerTest#Happy Path getRecord` has a different crc8 for the encoded total length on serialisation and
-deserialisation.
-This is not because they differ on VLQ - there is some subtle difference between immediate and incremental calculation
-of CRC8s.
+deserialisation. This is not because they differ on VLQ - there is some subtle difference between immediate and
+incremental calculation of CRC8s.
 
 ## Implementation
 
@@ -495,7 +511,7 @@ of CRC8s.
 - If I am at all interested in segment rollover, it makes more sense to operate on the level of directories
 - Alerting reader clients of segment turnover will be best accomplished by a special control message
 - Going multi-file is kinda breaking the 'one file' idea in 'Kafka in One File', but, hey, even SQLite has WAL files
-    - Recording most recent offsets of messages across topics in another file may be nice
+  - Recording most recent offsets of messages across topics in another file may be nice
 
 ### Stream Format
 
@@ -519,9 +535,9 @@ value: byte[]
 
 I needed a word for it so the
 
-The CRC covers the entire rest of the message. Message length computed from total, topic, and key lengths.
-I am not super confident in the 'what happens if the write is incomplete' which makes me think that an index in the
-directory makes sense
+The CRC covers the entire rest of the message. Message length computed from total, topic, and key lengths. I am not
+super confident in the 'what happens if the write is incomplete' which makes me think that an index in the directory
+makes sense
 
 Message Limits
 
@@ -543,5 +559,5 @@ As 'forks in the road' come up performance wise, it would be good to evaluate th
 - Object pools vs. not
 
 These are already a dizzying number of configurations, but with four options cobbling together the functions for each
-shouldn't be a huge pain.
-Keep in mind that GC impacting options may matter more for message latency than message throughput.
+shouldn't be a huge pain. Keep in mind that GC impacting options may matter more for message latency than message
+throughput.

@@ -6,10 +6,10 @@ import kotlin.use
 const val FILE_EXTENSION = "puro"
 const val SEGMENT_PREFIX = "stream"
 
-sealed class ConsumerSegmentEvent() {
-    data class Standard(val offset: Long, val segmentOrder: Int) : ConsumerSegmentEvent()
-    data object Starter : ConsumerSegmentEvent()
-}
+data class ConsumerSegmentEvent(
+    val offset: Long,
+    val segmentOrder: Int
+)
 
 fun getSegmentName(path: Path) =
     path.fileName.toString().substringAfter(SEGMENT_PREFIX).substringBefore(".$FILE_EXTENSION").toIntOrNull() ?: -1

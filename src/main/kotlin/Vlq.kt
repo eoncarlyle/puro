@@ -59,6 +59,7 @@ fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
 
 fun ByteBuffer.getSafeBufferSlice(length: Int) = if (hasRemaining() && this.remaining() >= length) { this.getBufferSlice(length) } else null
 
+@Deprecated("Unsafe bounds")
 fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
     val array = ByteArray(length)
     this.get(array, 0, array.size)
@@ -67,6 +68,8 @@ fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
 }
 
 fun ByteBuffer.getSafeArraySlice(length: Int) = if (this.hasRemaining() && this.remaining() >= length) { this.getArraySlice(length) } else null
+
+@Deprecated("Unsafe bounds")
 fun ByteBuffer.getArraySlice(length: Int): Pair<ByteArray, Byte> {
     val array = ByteArray(length)
     this.get(array, 0, array.size)
