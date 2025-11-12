@@ -56,6 +56,9 @@ The record size is smaller than the read buffer size, which is resulting in the 
 swapping of formats, but the first snippet is the `standardRead` buffer and the second is the segment at the time of the
 exception. This is now reproduced in `Get Record Truncation failure`.
 
+I'm also seeing some strange issues on one of my workstations with illegal offsets being sent - almost certainly a startup
+issue
+
 ```
 [ -16, -121, 4, 9, 116, 101, 115, 116, 84, 111, 112, 105, 99, 4, 107, 101, 121, 49, 118, 97, 108, 117, 101, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44 ]
 ```
