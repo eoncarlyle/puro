@@ -45,7 +45,7 @@ fun main() {
     Path("/tmp/puro/segment0.puro").deleteIfExists()
     val producer = PuroProducer(Path("/tmp/puro"), 10)
     val logger = LoggerFactory.getLogger("MainKt")
-    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger, startPoint = ConsumerStartPoint.StreamBeginning) {
+    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger, startPoint = ConsumerStartPoint.StreamBeginning, readBufferSize = 100) {
         println("${String(it.topic)}/${String(it.key.array())}/${String(it.value.array())}")
     }
     consumer.run()
@@ -56,7 +56,7 @@ fun main() {
             increment++
             PuroRecord(
                 "testTopic", "key${increment}".toByteBuffer(),
-                "value${increment}".toByteBuffer()
+                "value${(0..<250).map { it.toString() }.joinToString { "" } }".toByteBuffer()
             )
         }
         logger.info("Sending batch")

@@ -310,8 +310,9 @@ class PuroConsumer(
 
     override fun run() {
         logger.info("Starting Consumer")
-        watcherPreInitialisation()
-        Thread { watcher?.watch() }.start()
+        Thread {
+            watcherPreInitialisation()
+            watcher?.watch() }.start()
         logger.info("Consumer Directory Watcher Configured")
 
         Thread {
