@@ -12,7 +12,8 @@ class ConsumerTest {
     fun `Happy Path getRecord`() {
         val expectedTopic = "country-codes".toByteArray()
         val expectedKey = "usa2025".toByteBuffer()
-        val expectedValue = ByteBuffer.wrap("""
+        val expectedValue = ByteBuffer.wrap(
+            """
             {
                 "id": 233,
                 "name": "United States",
@@ -20,7 +21,8 @@ class ConsumerTest {
                 "code3": "USA",
                 "numeric": "840",
                 "emoji": "🇺🇸",
-            }""".trimIndent().toByteArray())
+            }""".trimIndent().toByteArray()
+        )
 
         val buffer = createRecordBuffer(
             PuroRecord(expectedTopic, expectedKey, expectedValue)
@@ -28,7 +30,7 @@ class ConsumerTest {
         val result = getRecord(buffer)
         assertTrue { result.isRight() }
 
-        result.map {  result ->
+        result.map { result ->
             val (actualTopic, actualKey, actualValue) = result.first
             assertContentEquals(expectedTopic, actualTopic)
             assertContentEquals(expectedKey.array(), actualKey.array())
@@ -49,7 +51,7 @@ class ConsumerTest {
         val result = getRecord(buffer)
         assertTrue { result.isRight() }
 
-        result.map {  result ->
+        result.map { result ->
             val (actualTopic, actualKey, actualValue) = result.first
             assertContentEquals(expectedTopic, actualTopic)
             assertContentEquals(expectedKey.array(), actualKey.array())
@@ -87,10 +89,12 @@ class ConsumerTest {
     @Test
     fun `Simple getMessages`() {
         val recordBuffers = (0..<4).map {
-            createRecordBuffer(PuroRecord(
-                "testTopic".toByteArray(), ByteBuffer.wrap(it.toString().toByteArray()),
-                ByteBuffer.wrap(it.toString().hashCode().toString().toByteArray())
-            ))
+            createRecordBuffer(
+                PuroRecord(
+                    "testTopic".toByteArray(), ByteBuffer.wrap(it.toString().toByteArray()),
+                    ByteBuffer.wrap(it.toString().hashCode().toString().toByteArray())
+                )
+            )
         }
         val consumerBuffer = ByteBuffer.allocate(recordBuffers.sumOf { it.remaining() })
         recordBuffers.forEach { record -> consumerBuffer.put(record) }
@@ -99,7 +103,8 @@ class ConsumerTest {
         val messageSize = 16L
         val readSize = 32L
         //TODO Uncomment once logger is removed again
-        val records = getRecords(consumerBuffer, messageSize, readSize, listOf("testTopic".toByteArray()), NOPLogger.NOP_LOGGER)
+        val records =
+            getRecords(consumerBuffer, messageSize, readSize, listOf("testTopic".toByteArray()), NOPLogger.NOP_LOGGER)
         assertEquals(1, records.first.size)
         assertEquals(readSize, records.second)
         assertEquals(48, readSize + messageSize) //One remaining message
@@ -110,14 +115,128 @@ class ConsumerTest {
         for (i in 1..<27) {
             val subrecordLengthWithMetaLength = 1 shl i
             val subrecordLength = hardTransitionSubrecordLength(subrecordLengthWithMetaLength)
-            assertEquals(subrecordLengthWithMetaLength, 1 + subrecordLength.toVlqEncoding().capacity() + subrecordLength)
+            assertEquals(
+                subrecordLengthWithMetaLength,
+                1 + subrecordLength.toVlqEncoding().capacity() + subrecordLength
+            )
         }
         println(hardTransitionSubrecordLength(100))
         println(98.toVlqEncoding().capacity())
     }
 
     @Test
-    fun `Get Record`() {
+    fun `Get Record Truncation failure`() {
+        getRecords(
+            ByteBuffer.wrap(
+                byteArrayOf(
+                    -16,
+                    -121,
+                    4,
+                    9,
+                    116,
+                    101,
+                    115,
+                    116,
+                    84,
+                    111,
+                    112,
+                    105,
+                    99,
+                    4,
+                    107,
+                    101,
+                    121,
+                    49,
+                    118,
+                    97,
+                    108,
+                    117,
+                    101,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44,
+                    32,
+                    44
+                )
+            ), 0, 100, listOf("testTopic".toByteArray()), NOPLogger.NOP_LOGGER
+        )
+    }
+
+    // TODO: test
+    @Test
+    fun `Get Record Simple Failure`() {
         getRecord(ByteBuffer.wrap(byteArrayOf(1)))
     }
 }

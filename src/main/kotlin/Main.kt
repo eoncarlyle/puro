@@ -51,12 +51,12 @@ fun main() {
     consumer.run()
     //Thread.sleep(1)
     var increment = 0
-    repeat(5) {
-        val messages = (0..<10).map {
+    repeat(1) {
+        val messages = (0..<1).map {
             increment++
             PuroRecord(
                 "testTopic", "key${increment}".toByteBuffer(),
-                "value${(0..<250).map { it.toString() }.joinToString { "" } }".toByteBuffer()
+                ("value${(0..<250).map { "_" }.joinToString { "" } }" + "!").toByteBuffer()
             )
         }
         logger.info("Sending batch")

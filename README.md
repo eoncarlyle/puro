@@ -17,23 +17,23 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 ## Action Items
 
 - [ ] Make, test working consumers
-  - [x] Fetch process buffer check: I think not all opertaions will work
-  - [x] Event loop
-  - [x] Consumer result types
-  - [x] Final message cleanup
-  - [x] `onHardProducerTransition`
-  - [x] `onConsumedSegmentTransition`
+    - [x] Fetch process buffer check: I think not all opertaions will work
+    - [x] Event loop
+    - [x] Consumer result types
+    - [x] Final message cleanup
+    - [x] `onHardProducerTransition`
+    - [x] `onConsumedSegmentTransition`
 - [ ] Stale and spurious segment problems
-  - If a segment is tombstoned, exclude it from relevant `Segments.kt` places
-  - Same as above except for spurious segments (when a segment of lower order than the highest found
+    - If a segment is tombstoned, exclude it from relevant `Segments.kt` places
+    - Same as above except for spurious segments (when a segment of lower order than the highest found
 - [ ] `ByteBuffer.getArraySlice` and `ByteBuffer.getBufferSlice` fixes one is untombstoned)
 - [ ] Active segment transition race condition handling
 - [ ] (Small) replace the hardcoded 1s with reference to current CRC size (in case it changes)
 - [ ] Check if the nonzero `consumerOffset` initialisation will actually work (ragged start problem)
 - [ ] Consumer and producer builders that prevent single-byte topics
 - [ ] Consumer builder that allows
-  - For consumer to wait for a stream topic that hasn't been created yet (wait-on-start)
-  - Different consumer patterns - from latest, beginning, specific offset, etc.
+    - For consumer to wait for a stream topic that hasn't been created yet (wait-on-start)
+    - Different consumer patterns - from latest, beginning, specific offset, etc.
 - [ ] Retry delay
 - [x] Control message handling and topic optimisation for consumers
 - [ ] Active segment transition race condition handling
@@ -49,6 +49,52 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Multithreaded producer tests
 
 ## Development Log
+
+### 2025-11-07
+
+The record size is smaller than the read buffer size, which is resulting in the `NegativeArraySizeException`. Pardon the
+swapping of formats, but the first snippet is the `standardRead` buffer and the second is the segment at the time of the
+exception. This is now reproduced in `Get Record Truncation failure`.
+
+```
+[ -16, -121, 4, 9, 116, 101, 115, 116, 84, 111, 112, 105, 99, 4, 107, 101, 121, 49, 118, 97, 108, 117, 101, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44, 32, 44 ]
+```
+
+```
+00000000: f087 0409 7465 7374 546f 7069 6304 6b65  ....testTopic.ke
+00000010: 7931 7661 6c75 652c 202c 202c 202c 202c  y1value, , , , ,
+00000020: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000030: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000040: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000050: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000060: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000070: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000080: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000090: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000000a0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000000b0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000000c0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000000d0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000000e0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000000f0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000100: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000110: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000120: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000130: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000140: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000150: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000160: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000170: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000180: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000190: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000001a0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000001b0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000001c0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000001d0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000001e0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+000001f0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
+00000200: 202c 202c 202c 202c 2021                  , , , , !
+```
 
 ### 2025-11-06
 
@@ -217,8 +263,8 @@ like
 
 1. The consumer is on _N_
 2. The following takes place with non-deterministic ordering
-   - The consumer receives word of a modify/create `DirectoryChangeEvent` for _N+1_
-   - The consumer reads a segment tombstone on _N_
+    - The consumer receives word of a modify/create `DirectoryChangeEvent` for _N+1_
+    - The consumer reads a segment tombstone on _N_
 3. The consumer observes and assigns the new active segment as _N+1_
 
 Until the consumer reads a tombstone message on _N_, the consumer should not re-assign the observed active segment. This
@@ -325,18 +371,18 @@ offset change followed by another substantial offset change. Thresholds on this 
 Relevant manpages
 
 - MacOS
-  - `man 2 kevent`
-  - `man 2 open`
-  - `man 2 write`
-  - `man 2 fcntl`
-  - `man 9 vnode`
-  - `man 7 fsevents`
+    - `man 2 kevent`
+    - `man 2 open`
+    - `man 2 write`
+    - `man 2 fcntl`
+    - `man 9 vnode`
+    - `man 7 fsevents`
 - Linux
-  - `man 7 inotify`
-  - `man 7 fsnotify`
-  - `man 7 fanotify`
-  - `man 2 write`
-  - `man 2 pwrite`
+    - `man 7 inotify`
+    - `man 7 fsnotify`
+    - `man 7 fanotify`
+    - `man 2 write`
+    - `man 2 pwrite`
 
 ### 2025-10-06-1
 
@@ -511,7 +557,7 @@ incremental calculation of CRC8s.
 - If I am at all interested in segment rollover, it makes more sense to operate on the level of directories
 - Alerting reader clients of segment turnover will be best accomplished by a special control message
 - Going multi-file is kinda breaking the 'one file' idea in 'Kafka in One File', but, hey, even SQLite has WAL files
-  - Recording most recent offsets of messages across topics in another file may be nice
+    - Recording most recent offsets of messages across topics in another file may be nice
 
 ### Stream Format
 
