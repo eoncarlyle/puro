@@ -56,7 +56,8 @@ The record size is smaller than the read buffer size, which is resulting in the 
 swapping of formats, but the first snippet is the `standardRead` buffer and the second is the segment at the time of the
 exception. This is now reproduced in `Get Record Truncation failure`.
 
-I'm also seeing some strange issues on one of my workstations with illegal offsets being sent - almost certainly a startup
+I'm also seeing some strange issues on one of my workstations with illegal offsets being sent - almost certainly a
+startup
 issue
 
 ```
@@ -98,6 +99,13 @@ issue
 000001f0: 202c 202c 202c 202c 202c 202c 202c 202c   , , , , , , , ,
 00000200: 202c 202c 202c 202c 2021                  , , , , !
 ```
+
+Okay - the reason that this is throwing is that you can hit `truncationAbnormality` in `getRecords` without the
+buffer advancing. We don't want the offset to advance to allow for truncation recovery, but I'm worried about
+automatically assuming that you have hit a truncation abnormailtiy. Technically
+`lengthData != null && topicLengthData != null && topicMetadata != null && keyMetdata != null && keyData != null && valueData != null`
+isn't correct because if element _N_ is null then all elements after _N_ must also be null. This all might be too 
+defensive?
 
 ### 2025-11-06
 
