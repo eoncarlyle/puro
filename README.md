@@ -50,7 +50,26 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Development Log
 
-### 2025-11-07
+### 2025-11-13
+
+The handling of `truncationAbnormality` and not shifting consumer offsets is important for handling truncation
+abnormalities. I made an implicit assumption of 'oh well the buffer will be exhausted' which is not true so that is just
+a matter of a `break` but in the event that _not a single record_ could fit into the read buffer, the consumer needs to
+handle this differently.
+
+The simplest thing that could possibly work would be permanently increasing the buffer size until the current read
+succeeds and then keeping the buffer size at that point. This has many obvious drawbacks and I won't do it, because a
+slightly better way to go about this is a 'standard' buffer that was initialised and a 'high water mark' buffer that
+increases in size to fit the largest message. This brings up an interesting problem: what should a strategy for buffer
+sizing be based off of prior performance? If the high water buffer has been needed every single read since it's
+inception, should the consumer stop trying to use the standard buffer? This is a class of problems called 'adaptive
+buffer allocation', and an example from Netty is shown below. This is something of a speed limit on the size of messages
+that the consumer can process, at least with the non-streaming example that I have implemented.
+
+https://github.com/netty/netty/blob/4.2/transport/src/main/java/io/netty/channel/AdaptiveRecvByteBufAllocator.java
+https://github.com/netty/netty/blob/4.2/common/src/main/java/io/netty/util/internal/AdaptiveCalculator.java#L28
+
+### 2025-11-12
 
 The record size is smaller than the read buffer size, which is resulting in the `NegativeArraySizeException`. Pardon the
 swapping of formats, but the first snippet is the `standardRead` buffer and the second is the segment at the time of the
@@ -104,7 +123,7 @@ Okay - the reason that this is throwing is that you can hit `truncationAbnormali
 buffer advancing. We don't want the offset to advance to allow for truncation recovery, but I'm worried about
 automatically assuming that you have hit a truncation abnormailtiy. Technically
 `lengthData != null && topicLengthData != null && topicMetadata != null && keyMetdata != null && keyData != null && valueData != null`
-isn't correct because if element _N_ is null then all elements after _N_ must also be null. This all might be too 
+isn't correct because if element _N_ is null then all elements after _N_ must also be null. This all might be too
 defensive?
 
 ### 2025-11-06
