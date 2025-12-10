@@ -62,7 +62,6 @@ carrying out the reads that is clearly not how things are going here.
 
 I think this can be overcome without completely changing the consumers.
 
-
 ### 2025-12-09
 
 Jesse gave me the idea that an in-process message could use a signal bit to indicate if a write was successful or not -
