@@ -49,6 +49,19 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Multithreaded producer tests
 
 ## Development Log
+At first I was uncomfortable with the idea of reading a mega-event into a buffer. After all, anything that can 
+incrementally stream large files generally incrementally streams large files. But I am aware of two things about Kafka
+1) The maximum record size of Kafka is ~10MB
+2) Kafka brokers use well more than 10MB of RAM
+
+Now this makes me very curious as to how something like `jsonrepair` can stream without just loading everything into
+memory - there has to be some interesting work there. But as far as how Puro is concerned, I think that records larger
+than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between 
+this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is 
+carrying out the reads that is clearly not how things are going here. 
+
+I think this can be overcome without completely changing the consumers.
+
 
 ### 2025-12-09
 
