@@ -50,6 +50,17 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Development Log
 
+### 2025-12-09
+
+Jesse gave me the idea that an in-process message could use a signal bit to indicate if a write was successful or not -
+in that the last thing a producer does is flip a bit. This solves the 'abandoned write' problem but may require
+batching, not that it would be _terribly_ onerous. This does make happy path consumption a little more complicated but
+it completely solves the 'producer dies silently' problem so it seems worthwhile.
+
+Do note that if no write lock is claimed and the final message hasn't been terminated then that is neccessarily
+either a dead producer or an illegal write and should be zeroed. Jesse was much more wary about the automatic repairing
+and didn't neccessarily use this flag trick in that context, but it works well with the invariants that I want.
+
 ### 2025-11-13
 
 The handling of `truncationAbnormality` and not shifting consumer offsets is important for handling truncation
