@@ -14,15 +14,8 @@ of bytes. Same applies for `ByteBuffer.getBufferSlice`, can reproduce this prett
 `getRecords` was incorrectly using the offsets as if it was operating on the active segment file stream rather than the
 read buffer, which introduced some issues. I _think_ I have those resolved now.
 
-## Action Items
+## Initial Action Items
 
-- [ ] Make, test working consumers
-    - [x] Fetch process buffer check: I think not all opertaions will work
-    - [x] Event loop
-    - [x] Consumer result types
-    - [x] Final message cleanup
-    - [x] `onHardProducerTransition`
-    - [x] `onConsumedSegmentTransition`
 - [ ] Stale and spurious segment problems
     - If a segment is tombstoned, exclude it from relevant `Segments.kt` places
     - Same as above except for spurious segments (when a segment of lower order than the highest found
@@ -35,32 +28,82 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
     - For consumer to wait for a stream topic that hasn't been created yet (wait-on-start)
     - Different consumer patterns - from latest, beginning, specific offset, etc.
 - [ ] Retry delay
-- [x] Control message handling and topic optimisation for consumers
 - [ ] Active segment transition race condition handling
 - [ ] Producer result types
 - [ ] Type Protection on VLQs
 - [ ] Fetch interior failures
-- [x] Batching producer writes, compare benchmarks
-- [x] Benchmarks on same level as `src`
 - [ ] Write size ceiling specification (small)
 - [ ] Benchmarks: investigation on read buffer size
 - [ ] Reader indexes
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
+## Signal Bit Action Items
+
+- [ ] New producer class using signal bits, no cleanup
+- [ ] Consumer class working with meaningless signal bits
+- [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
+- [ ] Producer class bad signal cleanup
+- [ ] Producer segment retermination
+- [ ] Consumer handling segment cleanup deletion
+- [ ] Handling messages larger than the read buffer
+
 ## Development Log
-At first I was uncomfortable with the idea of reading a mega-event into a buffer. After all, anything that can 
+
+At first I was uncomfortable with the idea of reading a mega-event into a buffer. After all, anything that can
 incrementally stream large files generally incrementally streams large files. But I am aware of two things about Kafka
+
 1) The maximum record size of Kafka is ~10MB
 2) Kafka brokers use well more than 10MB of RAM
 
 Now this makes me very curious as to how something like `jsonrepair` can stream without just loading everything into
 memory - there has to be some interesting work there. But as far as how Puro is concerned, I think that records larger
-than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between 
-this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is 
-carrying out the reads that is clearly not how things are going here. 
+than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between
+this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
+carrying out the reads that is clearly not how things are going here.
 
 I think this can be overcome without completely changing the consumers.
+
+### 2025-01-06
+
+With the 'signal bit' and moving to active producers I now have to shift between thinking a lot about how consumer
+concurrency works to thinking a lot about how producer concurrency works. The very first thing to think about is asking
+what would happen if a producer iterates down on an empty segment and hits a 0 signal bit. Sure, hypothetically
+there could be healthy messages appended onto the end of the segment. But the producer has no clue of this and
+the segment is unsound.
+
+The only thing the producer can do at this point is to delete everything after the start of the 0 message, no
+matter how many bits are behind it. Maybe this should be configurable, where the producer should throw rather than
+delete everything. But it can't go on as normal either way.
+
+The consumers may be more interesting than I first thought, but the entire hard transition logic needs to go. Deletions
+will be something they need to handle because of the last paragraph, and there _probably_ is some way to do this
+entirely lockless. Because a 1 signal bit means the record is ready to read, the locks aren't actually needed to prevent
+reads of records that haven't been finished. And while there is some utility in having a crude notification method, to
+be properly defensive I'd need to check the first bit anyway to see if it is ready. So the `do/while` on a lock gets
+converted to a `do/while` on the signal bit.
+
+This is complicated by trying to batch reads. On the one hand, being able to batch a large read is more performant.
+On the other hand, we might need to introduce wait logic inside of the fetch if a 0 signal bit is hit. I think the way
+to square this circle is with a different `GetRecordAbnormality` where the fetch will be retried if a low signal bit
+is hit anywhere. This may look awkward because explicit locks are a different way of thinking than with signal bits.
+
+That's enough about consumers. As far as producers go I think an explicit constructor is the best way to enforce
+startup. The producers have to check that the segment is sound otherwise they produce garbage results, and that
+means iterating down the length of the segment. The producer equivalent of this is handled by explicit threads, and
+because this is just a matter of using some callbacks it isn't really the same.
+
+After the time away from the project I think the way to handle messages larger than the read buffer is to use a
+`ConsumerResult` that indicates 'start building the single message buffer'. This is going to destinguish between 
+'standard' and 'single-message' read patterns, so entering and exiting this mode will need to be done with care. But 
+this would prevent any strange games with resizing buffers. This would require appending bits to a buffer as the partial
+reads come in. The length of the original message would then be used to understand what the stopping point is. I 
+would need to deal with any shorter messages that are emitted after the larger message. More trickily, we might need 
+to deal with `|.....long message, short message, short message, long message.....|`, but this shouldn't be awful to 
+model with the right return values. Probably should explicitly model this all as an explicit state machine? Will need to
+think on this. But that is the final item on the signal bit list.
+
+New checklist made for this side of things, good to get back into this.
 
 ### 2025-12-09
 

@@ -36,7 +36,7 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val encodedTotalLength = subrecordLength.toVlqEncoding()
 
     // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-    val recordBuffer = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + subrecordLength)
+    val recordBuffer = ByteBuffer.allocate(RECORD_CRC_BYES + encodedTotalLength.capacity() + subrecordLength)
 
     val messageCrc = getMessageCrc(
         encodedTotalLength = encodedTotalLength,
@@ -74,7 +74,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
         val encodedTotalLength = subrecordLength.toVlqEncoding()
 
         // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-        val recordLength = 1 + encodedTotalLength.capacity() + subrecordLength
+        val recordLength = RECORD_CRC_BYES + encodedTotalLength.capacity() + subrecordLength
         batchLength += recordLength
 
         val messageCrc = getMessageCrc(

@@ -107,49 +107,44 @@ fun getRecords(
     while (readBuffer.hasRemaining()) {
         val expectedCrc = readBuffer.get()
 
-        //val (encodedTotalLength, encodedTotalLengthBitCount, crc1) = byteBuffer.fromVlq()
         val lengthData = readBuffer.readSafety()?.fromVlq()
-        //val (topicLength, topicLengthBitCount, crc2) = byteBuffer.fromVlq()
         val topicLengthData = readBuffer.readSafety()?.fromVlq()
-        //val (topic, crc3) = byteBuffer.getEncodedString(topicLength)
         val topicMetadata = if (topicLengthData != null) {
             readBuffer.getSafeArraySlice(topicLengthData.first)
         } else null
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
         if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics)) {
-            if (lengthData != null && (1 + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
-                offset += (1 + lengthData.second + lengthData.first)
+            if (lengthData != null && (RECORD_CRC_BYES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
+                offset += (RECORD_CRC_BYES + lengthData.second + lengthData.first)
                 continue
             }
         }
-        //val (keyLength, keyLengthBitCount, crc4) = byteBuffer.fromVlq()
-        val keyMetdata = readBuffer.readSafety()?.fromVlq()
-        // val (key, crc5) = byteBuffer.getSubsequence(keyLength)
-        val keyData = if (keyMetdata != null) {
-            readBuffer.getSafeBufferSlice(keyMetdata.first)
+        val keyMetadata = readBuffer.readSafety()?.fromVlq()
+        val keyData = if (keyMetadata != null) {
+            readBuffer.getSafeBufferSlice(keyMetadata.first)
         } else null
-        // val (value, crc6) = byteBuffer.getSubsequence(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
-        val valueData = if (lengthData != null && topicLengthData != null && keyMetdata != null) {
-            readBuffer.getSafeBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetdata.second - keyMetdata.first)
+
+        val valueData = if (lengthData != null && topicLengthData != null && keyMetadata != null) {
+            readBuffer.getSafeBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetadata.second - keyMetadata.first)
         } else null
 
         // The else branch isn't advancing the offset because it is possible that this is the next batch
         // TODO: while the reasoning above is sound, but we now have a baked in assumption that the only time
         // TODO: ...we will have bad messages is for the outside of fetches. Should throw if this is not the case,
         // TODO: ...this is now maked as 'Fetch interior failures' in the readme
-        if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetdata != null && keyData != null && valueData != null) {
+        if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetadata != null && keyData != null && valueData != null) {
             val (subrecordLength, encodedTotalLengthBitCount, crc1) = lengthData
-            val (topicLength, topicLengthBitCount, crc2) = topicLengthData
+            val (_, _, crc2) = topicLengthData // _,_ are topic length and bit count
             val (topic, crc3) = topicMetadata
-            val (keyLength, keyLengthBitCount, crc4) = keyMetdata
+            val (_, _, crc4) = keyMetadata  //_,_ are key length and bit count
             val (key, crc5) = keyData
             val (value, crc6) = valueData
 
             val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
             // Equivalent to:
             //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
-            val totalLength = 1 + encodedTotalLengthBitCount + subrecordLength
+            val totalLength = RECORD_CRC_BYES + encodedTotalLengthBitCount + subrecordLength
 
             if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
@@ -176,7 +171,7 @@ fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
     //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
     var subrecordLength = subrecordLengthMetaLengthSum - 1
 
-    while (subrecordLengthMetaLengthSum != 1 + ceilingDivision(
+    while (subrecordLengthMetaLengthSum != RECORD_CRC_BYES + ceilingDivision(
             Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
             7
         ) + subrecordLength
@@ -195,7 +190,6 @@ class PuroConsumer(
     val onMessage: (PuroRecord) -> Unit, //TODO add logger
 ) : Runnable {
     companion object {
-        // This should be configurable?
         private val retryDelay = 10.milliseconds.toJavaDuration()
 
         // I don't have very good intuition on this one, should be benchmarked
@@ -372,13 +366,13 @@ class PuroConsumer(
                 }
 
                 is FetchSuccess.RecordsAfterTombstone -> {
-                    reterminateSegment()
+                    //reterminateSegment()
                     currentConsumerLocked = true
                     records.onMessages()
                 }
 
                 is FetchSuccess.HardTransition -> {
-                    onHardTransitionCleanup(it)
+                    //onHardTransitionCleanup(it)
                     records.onMessages()
                 }
             }
@@ -474,6 +468,8 @@ class PuroConsumer(
         }
     }
 
+    // I think there is no reason to have this anymore but I don't want to delete it just yet
+    @Deprecated("Nonfunctional with signal bits")
     private fun onHardTransitionCleanup(transition: FetchSuccess.HardTransition) {
         val subrecordLengthMetaLengthSum = transition.abnormalOffsetWindowStop - transition.abnormalOffsetWindowStart
         getConsumedSegmentChannel().use { channel ->
@@ -496,7 +492,7 @@ class PuroConsumer(
                 // Matching the questionable convention in producer, should be changed when the producer changes
                 val encodedTotalLength = subrecordLength.toVlqEncoding()
 
-                val cleanupRecord = ByteBuffer.allocate(1 + encodedTotalLength.capacity() + subrecordLength)
+                val cleanupRecord = ByteBuffer.allocate(RECORD_CRC_BYES + encodedTotalLength.capacity() + subrecordLength)
                 cleanupRecord.put(0xFF.toByte())
                 cleanupRecord.put(encodedTotalLength)
                 cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value.size.toVlqEncoding())
@@ -509,10 +505,11 @@ class PuroConsumer(
         }
 
         if (transition.recordsAfterTombstone) {
-            reterminateSegment()
+            //reterminateSegment()
         }
     }
 
+    //TODO This will not work with signal bits, but keeping this here for now
     private fun reterminateSegment() {
         getConsumedSegmentChannel().use { channel ->
             val fileSize = channel.size()
