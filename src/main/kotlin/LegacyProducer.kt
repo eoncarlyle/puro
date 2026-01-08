@@ -36,7 +36,7 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     val encodedTotalLength = subrecordLength.toVlqEncoding()
 
     // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-    val recordBuffer = ByteBuffer.allocate(RECORD_CRC_BYES + encodedTotalLength.capacity() + subrecordLength)
+    val recordBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedTotalLength.capacity() + subrecordLength)
 
     val messageCrc = getMessageCrc(
         encodedTotalLength = encodedTotalLength,
@@ -74,7 +74,7 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
         val encodedTotalLength = subrecordLength.toVlqEncoding()
 
         // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-        val recordLength = RECORD_CRC_BYES + encodedTotalLength.capacity() + subrecordLength
+        val recordLength = RECORD_CRC_BYTES + encodedTotalLength.capacity() + subrecordLength
         batchLength += recordLength
 
         val messageCrc = getMessageCrc(
@@ -136,7 +136,7 @@ fun getMessageCrc(
 //  is the number of messages to be sent before reliquishing the lock
 // This should have a maximum value to prevent starvation
 // Probably better to return null/failing result for misconfiguration
-class PuroProducer(
+class LegacyPuroProducer(
     val streamDirectory: Path,
     val maximumWriteBatchSize: Int,
 ) {

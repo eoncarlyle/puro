@@ -45,7 +45,7 @@ class ProducerTest {
         val puroRecords = (0..<9).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
-        val producer = PuroProducer(Path("/tmp"), 3)
+        val producer = LegacyPuroProducer(Path("/tmp"), 3)
         producer.sendBatched(puroRecords)  { buffer -> { _: FileChannel -> batchedBuffers.add(buffer) } }
         assertEquals(3, batchedBuffers.size)
     }
@@ -56,7 +56,7 @@ class ProducerTest {
         val puroRecords = (0..<10).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
-        val producer = PuroProducer(Path("/tmp"), 3)
+        val producer = LegacyPuroProducer(Path("/tmp"), 3)
         producer.sendBatched(puroRecords)  { buffer -> { _: FileChannel -> batchedBuffers.add(buffer) } }
         assertEquals(4, batchedBuffers.size)
     }

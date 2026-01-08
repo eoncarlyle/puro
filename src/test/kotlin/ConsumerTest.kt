@@ -117,7 +117,7 @@ class ConsumerTest {
             val subrecordLength = hardTransitionSubrecordLength(subrecordLengthWithMetaLength)
             assertEquals(
                 subrecordLengthWithMetaLength,
-                RECORD_CRC_BYES + subrecordLength.toVlqEncoding().capacity() + subrecordLength
+                RECORD_CRC_BYTES + subrecordLength.toVlqEncoding().capacity() + subrecordLength
             )
         }
         println(hardTransitionSubrecordLength(100))

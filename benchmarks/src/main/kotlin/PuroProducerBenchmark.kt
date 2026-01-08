@@ -1,6 +1,6 @@
 package com.iainschmitt.puro
 
-import PuroProducer
+import LegacyPuroProducer
 import PuroRecord
 import org.openjdk.jmh.annotations.*
 import kotlinx.serialization.json.Json
@@ -19,7 +19,7 @@ import kotlin.io.path.exists
 @Fork(1)
 open class PuroProducerBenchmark {
 
-    private lateinit var producer: PuroProducer
+    private lateinit var producer: LegacyPuroProducer
     private lateinit var records: List<PuroRecord>
     var streamDirectory = Path("/tmp/puro")
 
@@ -27,7 +27,7 @@ open class PuroProducerBenchmark {
     fun setup() {
         resetDirectory()
         Files.createDirectory(streamDirectory)
-        producer = PuroProducer(streamDirectory, 100)
+        producer = LegacyPuroProducer(streamDirectory, 100)
 
         val flagsJson = object {}.javaClass.getResourceAsStream("/flags.json")
             ?.bufferedReader()

@@ -96,7 +96,7 @@ fun getRecords(
     subscribedTopics: List<ByteArray>,
     logger: Logger,
     isEndOfFetch: Boolean = false
-): Triple<List<PuroRecord>, Long, GetRecordAbnormality?> {
+): Triple<List<PuroRecord>, Long, GetSignalRecordAbnormality?> {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
     var truncationAbnormality = false // Only matters if end-of-fetch
@@ -115,8 +115,8 @@ fun getRecords(
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
         if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics)) {
-            if (lengthData != null && (RECORD_CRC_BYES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
-                offset += (RECORD_CRC_BYES + lengthData.second + lengthData.first)
+            if (lengthData != null && (RECORD_CRC_BYTES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
+                offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
                 continue
             }
         }
@@ -144,15 +144,15 @@ fun getRecords(
             val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
             // Equivalent to:
             //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
-            val totalLength = RECORD_CRC_BYES + encodedTotalLengthBitCount + subrecordLength
+            val totalLength = RECORD_CRC_BYTES + encodedTotalLengthBitCount + subrecordLength
 
             if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
             } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
                 val abnormality = if (isEndOfFetch || readBuffer.hasRemaining()) {
-                    GetRecordAbnormality.RecordsAfterTombstone
+                    GetSignalRecordAbnormality.RecordsAfterTombstone
                 } else {
-                    GetRecordAbnormality.StandardTombstone
+                    GetSignalRecordAbnormality.StandardTombstone
                 }
                 return Triple(records, offset, abnormality)
             }
@@ -164,14 +164,14 @@ fun getRecords(
         }
     }
 
-    return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetRecordAbnormality.Truncation else null)
+    return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetSignalRecordAbnormality.Truncation else null)
 }
 
 fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
     //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
     var subrecordLength = subrecordLengthMetaLengthSum - 1
 
-    while (subrecordLengthMetaLengthSum != RECORD_CRC_BYES + ceilingDivision(
+    while (subrecordLengthMetaLengthSum != RECORD_CRC_BYTES + ceilingDivision(
             Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
             7
         ) + subrecordLength
@@ -492,7 +492,7 @@ class PuroConsumer(
                 // Matching the questionable convention in producer, should be changed when the producer changes
                 val encodedTotalLength = subrecordLength.toVlqEncoding()
 
-                val cleanupRecord = ByteBuffer.allocate(RECORD_CRC_BYES + encodedTotalLength.capacity() + subrecordLength)
+                val cleanupRecord = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedTotalLength.capacity() + subrecordLength)
                 cleanupRecord.put(0xFF.toByte())
                 cleanupRecord.put(encodedTotalLength)
                 cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value.size.toVlqEncoding())
@@ -554,7 +554,7 @@ class PuroConsumer(
         val readRecords = ArrayList<PuroRecord>()
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
 
-        var lastAbnormality: GetRecordAbnormality? = null
+        var lastAbnormality: GetSignalRecordAbnormality? = null
         for (step in 0..<steps) {
             val isLastBatch = (step == steps - 1)
 
@@ -585,10 +585,10 @@ class PuroConsumer(
             logger.info("Offset change $offsetChange")
             readOffset += offsetChange
 
-            if (isLastBatch && abnormality == GetRecordAbnormality.Truncation) {
+            if (isLastBatch && abnormality == GetSignalRecordAbnormality.Truncation) {
                 readAbnormalOffsetWindow = consumerOffset to producerOffset
-            } else if (abnormality == GetRecordAbnormality.RecordsAfterTombstone ||
-                abnormality == GetRecordAbnormality.StandardTombstone && step < (steps - 1)
+            } else if (abnormality == GetSignalRecordAbnormality.RecordsAfterTombstone ||
+                abnormality == GetSignalRecordAbnormality.StandardTombstone && step < (steps - 1)
             ) {
                 lastAbnormality = abnormality
                 break
@@ -602,8 +602,8 @@ class PuroConsumer(
             readRecords,
             readAbnormalOffsetWindow,
             when (lastAbnormality) {
-                is GetRecordAbnormality.StandardTombstone -> ReadTombstoneStatus.StandardTombstone
-                is GetRecordAbnormality.RecordsAfterTombstone -> ReadTombstoneStatus.RecordsAfterTombstone
+                is GetSignalRecordAbnormality.StandardTombstone -> ReadTombstoneStatus.StandardTombstone
+                is GetSignalRecordAbnormality.RecordsAfterTombstone -> ReadTombstoneStatus.RecordsAfterTombstone
                 else -> ReadTombstoneStatus.NotTombstoned
             }
         )

@@ -46,6 +46,7 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Producer class bad signal cleanup
 - [ ] Producer segment retermination
 - [ ] Consumer handling segment cleanup deletion
+- [ ] Producer active segment change handling
 - [ ] Handling messages larger than the read buffer
 
 ## Development Log
@@ -63,6 +64,17 @@ this and a regular continuation is that this can be 'chained' multiple times and
 carrying out the reads that is clearly not how things are going here.
 
 I think this can be overcome without completely changing the consumers.
+
+### 2026-01-07
+
+I'm going to have to be careful about signal bit placement, I forget how endianness is established 'within' a bit to the
+extent that makes sense. 
+
+~~I don't think that truncation should be treated any differently than large message reads. If a truncated message ends up
+being failed I think that we need to record the initial offset at the 'start' of the large message run in order to 
+properly account for this.~~
+
+Truncation vs large message is about if the message _could_ fit in the buffer
 
 ### 2025-01-06
 

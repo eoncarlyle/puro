@@ -2,7 +2,9 @@ import java.nio.ByteBuffer
 
 const val TOMBSTONE_RECORD_LENGTH = 5
 
-const val RECORD_CRC_BYES = 1
+const val RECORD_CRC_BYTES = 1
+
+const val RECORD_SIGNAL_BYTES = 1
 
 // If you don't rewind, you will have problems!
 // The Haskellers have a point here!
