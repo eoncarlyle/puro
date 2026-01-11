@@ -60,12 +60,12 @@ fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     }
     val start = recordBuffer.position()
     val expectedCrc = recordBuffer.get()
-    val (encodedTotalLength, _, crc1) = recordBuffer.fromVlq()
+    val (encodedSubrecordLength, _, crc1) = recordBuffer.fromVlq()
     val (topicLength, topicLengthBitCount, crc2) = recordBuffer.fromVlq()
     val (topic, crc3) = recordBuffer.getArraySlice(topicLength)
     val (keyLength, keyLengthBitCount, crc4) = recordBuffer.fromVlq()
     val (key, crc5) = recordBuffer.getBufferSlice(keyLength)
-    val (value, crc6) = recordBuffer.getBufferSlice(encodedTotalLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
+    val (value, crc6) = recordBuffer.getBufferSlice(encodedSubrecordLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
 
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
@@ -96,7 +96,7 @@ fun getRecords(
     subscribedTopics: List<ByteArray>,
     logger: Logger,
     isEndOfFetch: Boolean = false
-): Triple<List<PuroRecord>, Long, GetSignalRecordAbnormality?> {
+): Triple<List<PuroRecord>, Long, GetSignalRecordsAbnormality?> {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
     var truncationAbnormality = false // Only matters if end-of-fetch
@@ -134,7 +134,7 @@ fun getRecords(
         // TODO: ...we will have bad messages is for the outside of fetches. Should throw if this is not the case,
         // TODO: ...this is now maked as 'Fetch interior failures' in the readme
         if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetadata != null && keyData != null && valueData != null) {
-            val (subrecordLength, encodedTotalLengthBitCount, crc1) = lengthData
+            val (subrecordLength, encodedSubrecordLengthBitCount, crc1) = lengthData
             val (_, _, crc2) = topicLengthData // _,_ are topic length and bit count
             val (topic, crc3) = topicMetadata
             val (_, _, crc4) = keyMetadata  //_,_ are key length and bit count
@@ -144,15 +144,15 @@ fun getRecords(
             val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
             // Equivalent to:
             //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
-            val totalLength = RECORD_CRC_BYTES + encodedTotalLengthBitCount + subrecordLength
+            val totalLength = RECORD_CRC_BYTES + encodedSubrecordLengthBitCount + subrecordLength
 
             if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
             } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
                 val abnormality = if (isEndOfFetch || readBuffer.hasRemaining()) {
-                    GetSignalRecordAbnormality.RecordsAfterTombstone
+                    GetSignalRecordsAbnormality.RecordsAfterTombstone
                 } else {
-                    GetSignalRecordAbnormality.StandardTombstone
+                    GetSignalRecordsAbnormality.StandardTombstone
                 }
                 return Triple(records, offset, abnormality)
             }
@@ -164,7 +164,7 @@ fun getRecords(
         }
     }
 
-    return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetSignalRecordAbnormality.Truncation else null)
+    return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetSignalRecordsAbnormality.Truncation else null)
 }
 
 fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
@@ -490,11 +490,11 @@ class PuroConsumer(
             } else {
                 val subrecordLength = hardTransitionSubrecordLength(subrecordLengthMetaLengthSum.toInt())
                 // Matching the questionable convention in producer, should be changed when the producer changes
-                val encodedTotalLength = subrecordLength.toVlqEncoding()
+                val encodedSubrecordLength = subrecordLength.toVlqEncoding()
 
-                val cleanupRecord = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedTotalLength.capacity() + subrecordLength)
+                val cleanupRecord = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength)
                 cleanupRecord.put(0xFF.toByte())
-                cleanupRecord.put(encodedTotalLength)
+                cleanupRecord.put(encodedSubrecordLength)
                 cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value.size.toVlqEncoding())
                 cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value)
                 cleanupRecord.rewind()
@@ -554,7 +554,7 @@ class PuroConsumer(
         val readRecords = ArrayList<PuroRecord>()
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
 
-        var lastAbnormality: GetSignalRecordAbnormality? = null
+        var lastAbnormality: GetSignalRecordsAbnormality? = null
         for (step in 0..<steps) {
             val isLastBatch = (step == steps - 1)
 
@@ -585,10 +585,10 @@ class PuroConsumer(
             logger.info("Offset change $offsetChange")
             readOffset += offsetChange
 
-            if (isLastBatch && abnormality == GetSignalRecordAbnormality.Truncation) {
+            if (isLastBatch && abnormality == GetSignalRecordsAbnormality.Truncation) {
                 readAbnormalOffsetWindow = consumerOffset to producerOffset
-            } else if (abnormality == GetSignalRecordAbnormality.RecordsAfterTombstone ||
-                abnormality == GetSignalRecordAbnormality.StandardTombstone && step < (steps - 1)
+            } else if (abnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
+                abnormality == GetSignalRecordsAbnormality.StandardTombstone && step < (steps - 1)
             ) {
                 lastAbnormality = abnormality
                 break
@@ -602,8 +602,8 @@ class PuroConsumer(
             readRecords,
             readAbnormalOffsetWindow,
             when (lastAbnormality) {
-                is GetSignalRecordAbnormality.StandardTombstone -> ReadTombstoneStatus.StandardTombstone
-                is GetSignalRecordAbnormality.RecordsAfterTombstone -> ReadTombstoneStatus.RecordsAfterTombstone
+                is GetSignalRecordsAbnormality.StandardTombstone -> ReadTombstoneStatus.StandardTombstone
+                is GetSignalRecordsAbnormality.RecordsAfterTombstone -> ReadTombstoneStatus.RecordsAfterTombstone
                 else -> ReadTombstoneStatus.NotTombstoned
             }
         )

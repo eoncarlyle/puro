@@ -9,7 +9,7 @@ import kotlin.math.min
 
 private data class SerialisedPuroRecord(
     val messageCrc: Byte,
-    val encodedTotalLength: ByteBuffer,
+    val encodedSubrecordLength: ByteBuffer,
     val encodedTopicLength: ByteBuffer,
     val encodedTopic: ByteArray,
     val encodedKeyLength: ByteBuffer,
@@ -33,22 +33,22 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
 
     val subrecordLength =
         encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-    val encodedTotalLength = subrecordLength.toVlqEncoding()
+    val encodedSubrecordLength = subrecordLength.toVlqEncoding()
 
-    // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-    val recordBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedTotalLength.capacity() + subrecordLength)
+    // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
+    val recordBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength)
 
     val messageCrc = getMessageCrc(
-        encodedTotalLength = encodedTotalLength,
+        encodedSubrecordLength = encodedSubrecordLength,
         encodedTopicLength = encodedTopicLength,
         topic = topic,
         encodedKeyLength = encodedKeyLength,
         key = key,
         value = value
     )
-    rewindAll(encodedTotalLength, encodedTopicLength, encodedKeyLength, key, value)
+    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
 
-    recordBuffer.put(messageCrc).put(encodedTotalLength).put(encodedTopicLength).put(topic)
+    recordBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(topic)
         .put(encodedKeyLength).put(key).put(value)
 
     return recordBuffer.rewind()
@@ -71,14 +71,14 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
 
         val subrecordLength =
             encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-        val encodedTotalLength = subrecordLength.toVlqEncoding()
+        val encodedSubrecordLength = subrecordLength.toVlqEncoding()
 
-        // crc8 + totalLength + (topicLength + topic + keyLength + key + value)
-        val recordLength = RECORD_CRC_BYTES + encodedTotalLength.capacity() + subrecordLength
+        // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
+        val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
         batchLength += recordLength
 
         val messageCrc = getMessageCrc(
-            encodedTotalLength = encodedTotalLength,
+            encodedSubrecordLength = encodedSubrecordLength,
             encodedTopicLength = encodedTopicLength,
             topic = topic,
             encodedKeyLength = encodedKeyLength,
@@ -86,11 +86,11 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
             value = value
         )
 
-        rewindAll(encodedTotalLength, encodedTopicLength, encodedKeyLength, key, value)
+        rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
 
         protoRecords[index] = SerialisedPuroRecord(
             messageCrc,
-            encodedTotalLength,
+            encodedSubrecordLength,
             encodedTopicLength,
             topic,
             encodedKeyLength,
@@ -104,14 +104,14 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
     protoRecords.forEach { record: SerialisedPuroRecord? ->
 
         val (messageCrc,
-            encodedTotalLength,
+            encodedSubrecordLength,
             encodedTopicLength,
             encodedTopic,
             encodedKeyLength,
             key,
             value) = record!!
 
-        batchBuffer.put(messageCrc).put(encodedTotalLength).put(encodedTopicLength).put(encodedTopic)
+        batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
             .put(encodedKeyLength).put(key).put(value)
     }
 
@@ -119,14 +119,14 @@ fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
 }
 
 fun getMessageCrc(
-    encodedTotalLength: ByteBuffer,
+    encodedSubrecordLength: ByteBuffer,
     encodedTopicLength: ByteBuffer,
     topic: ByteArray,
     encodedKeyLength: ByteBuffer,
     key: ByteBuffer,
     value: ByteBuffer,
 ): Byte =
-    crc8(encodedTotalLength) //TODO get on same page about using buffers here - concerned of `ByteBuffer#array` cost
+    crc8(encodedSubrecordLength) //TODO get on same page about using buffers here - concerned of `ByteBuffer#array` cost
         .withCrc8(encodedTopicLength)
         .withCrc8(topic)
         .withCrc8(encodedKeyLength)

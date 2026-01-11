@@ -40,14 +40,29 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Signal Bit Action Items
 
-- [ ] New producer class using signal bits, no cleanup
-- [ ] Consumer class working with meaningless signal bits
+- [ ] Consumer class
 - [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
-- [ ] Producer class bad signal cleanup
+- [ ] Producer class bad signal cleanup + traversal
 - [ ] Producer segment retermination
 - [ ] Consumer handling segment cleanup deletion
 - [ ] Producer active segment change handling
 - [ ] Handling messages larger than the read buffer
+
+## Message format
+
+```text
+signal: uint8
+crc: uint8
+subrecordLength: varint
+topicLength: varint
+topic: byte[]
+keyLength: varint
+key: byte[]
+value: byte[]
+```
+
+- Subrecord length is the sum of the length of `topicLength`, `topic`, `keyLength`, `key`, and `value`
+- Total length is the sum of the length of `signal`, `crc`, and the number of bytes required to express `subrecordLength`
 
 ## Development Log
 
@@ -65,6 +80,43 @@ carrying out the reads that is clearly not how things are going here.
 
 I think this can be overcome without completely changing the consumers.
 
+Also, I am finally changing 'total length' to 'subrecord length' in the message schema.
+
+The entire idea behind the signal bit is that it makes it possible for the following case to be recovered from in 
+the simplest possible way
+1) Producer produces a bunch of events but dies halfway through, before it can toggle a signal bit 
+2) A new producer starts producing
+3) A consumer starts consuming
+
+Without signal bits that are inverted as the final step of a write, the only way the failure above could be 
+addressed is if the consumer is listening to changes in the directory while the error happens. But the producer has 
+to make sure that the segments are 'clean' prior to appending. This could be _partially_ fixed by appending the 
+length in reverse VLQ as the final part of the message. The only case this wouldn't cover would be if a failure 
+meant an entire message wasn't written. 
+
+Producers will need to handle this hard failure situation even if it won't be the norm. Because of this, producers are 
+now a special case of consumer insofar as they have to progress down the length of a segment. This likely makes it
+worthwhile to do the reverse length appending, but things are shaping up such that I'm probably better off doing the 
+length prepending thing.
+
+One other thought: does it really make sense to do the bit flagging _for every single message_? This requires 
+writing a message - probably a small one <1 MB, and then flagging the bit in a second disk flush. That's two disk writes
+per record and doesn't seem efficient. I've been avoiding doing so, but it may make sense to batch at this point; 
+length prepending may make more sense on the batch level rather than for a single message.
+
+### 2026-01-10
+
+At first I thought 'well, there should be three types of `GetSignalRecordsResult` classes for large record reads:
+those where normal records are at the start of the read and then a large record comes up, those that are
+completely occupied by the large records, and those that end with a large record followed by normal record
+afterwards. But it is much simpler to handle small message reads differently than large record reads: once a large
+message is hit, the `getSignalBitRecords` should only return the small messages and have the next read 'discover' the
+start of a large record.
+
+Because the way my VLQ integers work is pretty bad, the limit on read buffer size is 6: signal byte, crc, and length.
+The VLQ numbers are capped at integers because byte buffers are capped at integers, but I wonder if there is some other
+way by handling mutliple byte buffers at a time? A bit of a pipedream, maybe not even worth thinking about.
+
 ### 2026-01-07
 
 I'm going to have to be careful about signal bit placement, I forget how endianness is established 'within' a bit to the
@@ -76,7 +128,7 @@ properly account for this.~~
 
 Truncation vs large message is about if the message _could_ fit in the buffer
 
-### 2025-01-06
+### 2026-01-06
 
 With the 'signal bit' and moving to active producers I now have to shift between thinking a lot about how consumer
 concurrency works to thinking a lot about how producer concurrency works. The very first thing to think about is asking
