@@ -40,7 +40,7 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Signal Bit Action Items
 
-- [ ] Producer class, with runtime exception on integrity failure
+- [x] Producer class, with runtime exception on integrity failure
 - [ ] Consumer class
 - [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
 - [ ] Producer class segment cleanup
