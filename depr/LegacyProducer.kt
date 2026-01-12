@@ -7,52 +7,8 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 import kotlin.math.min
 
-private data class SerialisedPuroRecord(
-    val messageCrc: Byte,
-    val encodedSubrecordLength: ByteBuffer,
-    val encodedTopicLength: ByteBuffer,
-    val encodedTopic: ByteArray,
-    val encodedKeyLength: ByteBuffer,
-    val key: ByteBuffer,
-    val value: ByteBuffer
-)
 
-fun rewindAll(vararg bytes: ByteBuffer) = bytes.forEach { it.rewind() }
 
-fun createRecordBuffer(record: PuroRecord): ByteBuffer {
-    val (topic, key, value) = record
-    rewindAll(key, value)
-
-    // When I finally get around to changing the questionable variable names, change this for `onHardTransitionCleanup` too
-    // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
-    val topicLength = topic.size
-    val encodedTopicLength = topicLength.toVlqEncoding()
-    val keyLength = key.capacity()
-    val encodedKeyLength = keyLength.toVlqEncoding()
-    val valueLength = value.capacity()
-
-    val subrecordLength =
-        encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-    val encodedSubrecordLength = subrecordLength.toVlqEncoding()
-
-    // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
-    val recordBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength)
-
-    val messageCrc = getMessageCrc(
-        encodedSubrecordLength = encodedSubrecordLength,
-        encodedTopicLength = encodedTopicLength,
-        topic = topic,
-        encodedKeyLength = encodedKeyLength,
-        key = key,
-        value = value
-    )
-    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
-
-    recordBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(topic)
-        .put(encodedKeyLength).put(key).put(value)
-
-    return recordBuffer.rewind()
-}
 
 fun createBatchedRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
     val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size) { null }

@@ -534,7 +534,7 @@ class PuroConsumer(
         }
     }
 
-    fun getStepCount(offsetDelta: Long) = (if (offsetDelta % readBufferSize == 0L) {
+    private fun getStepCount(offsetDelta: Long) = (if (offsetDelta % readBufferSize == 0L) {
         (offsetDelta / readBufferSize)
     } else {
         (offsetDelta / readBufferSize) + 1

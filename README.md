@@ -40,9 +40,10 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 ## Signal Bit Action Items
 
+- [ ] Producer class, with runtime exception on integrity failure
 - [ ] Consumer class
 - [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
-- [ ] Producer class bad signal cleanup + traversal
+- [ ] Producer class segment cleanup
 - [ ] Producer segment retermination
 - [ ] Consumer handling segment cleanup deletion
 - [ ] Producer active segment change handling
@@ -51,7 +52,6 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 ## Message format
 
 ```text
-signal: uint8
 crc: uint8
 subrecordLength: varint
 topicLength: varint
@@ -78,31 +78,20 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
-I think this can be overcome without completely changing the consumers.
+### 2026-01-11
 
-Also, I am finally changing 'total length' to 'subrecord length' in the message schema.
+Rather than having some [discrete message batch](https://kafka.apache.org/41/implementation/message-format/), I 
+realised that the best way forward with signal bits is to use the existing message structure: two new `ControlTopic` 
+members. The first would be a signal bit message, and the final would be a non-VLQ integer message indicating the size
+of the block. The latter message would be fixed size owing to integer encoding, and would be enough information for the
+producer to read the relevant byte offset (but it would make more sense to read the entire message). This means that 
+a producer can 'drop in' without consuming the entire segment first. If a full integrity check needs to be done then 
+that changes things, but presumably I could write the producers now before moving over to the consumers - not that 
+it really matters all that much.
 
-The entire idea behind the signal bit is that it makes it possible for the following case to be recovered from in 
-the simplest possible way
-1) Producer produces a bunch of events but dies halfway through, before it can toggle a signal bit 
-2) A new producer starts producing
-3) A consumer starts consuming
+Sublock size = length of entire block except the end block message
 
-Without signal bits that are inverted as the final step of a write, the only way the failure above could be 
-addressed is if the consumer is listening to changes in the directory while the error happens. But the producer has 
-to make sure that the segments are 'clean' prior to appending. This could be _partially_ fixed by appending the 
-length in reverse VLQ as the final part of the message. The only case this wouldn't cover would be if a failure 
-meant an entire message wasn't written. 
-
-Producers will need to handle this hard failure situation even if it won't be the norm. Because of this, producers are 
-now a special case of consumer insofar as they have to progress down the length of a segment. This likely makes it
-worthwhile to do the reverse length appending, but things are shaping up such that I'm probably better off doing the 
-length prepending thing.
-
-One other thought: does it really make sense to do the bit flagging _for every single message_? This requires 
-writing a message - probably a small one <1 MB, and then flagging the bit in a second disk flush. That's two disk writes
-per record and doesn't seem efficient. I've been avoiding doing so, but it may make sense to batch at this point; 
-length prepending may make more sense on the batch level rather than for a single message.
+Removed the legacy producer in this build
 
 ### 2026-01-10
 
@@ -116,6 +105,64 @@ start of a large record.
 Because the way my VLQ integers work is pretty bad, the limit on read buffer size is 6: signal byte, crc, and length.
 The VLQ numbers are capped at integers because byte buffers are capped at integers, but I wonder if there is some other
 way by handling mutliple byte buffers at a time? A bit of a pipedream, maybe not even worth thinking about.
+
+Also, I am finally changing 'total length' to 'subrecord length' in the message schema.
+
+The entire idea behind the signal bit is that it makes it possible for the following case to be recovered from in
+the simplest possible way
+1) Producer produces a bunch of events but dies halfway through, before it can toggle a signal bit
+2) A new producer starts producing
+3) A consumer starts consuming
+
+Without signal bits that are inverted as the final step of a write, the only way the failure above could be
+addressed is if the consumer is listening to changes in the directory while the error happens. But the producer has
+to make sure that the segments are 'clean' prior to appending. This could be _partially_ fixed by appending the
+length in reverse VLQ as the final part of the message. The only case this wouldn't cover would be if a failure
+meant an entire message wasn't written.
+
+Producers will need to handle this hard failure situation even if it won't be the norm. Because of this, producers are
+now a special case of consumer insofar as they have to progress down the length of a segment. This likely makes it
+worthwhile to do the reverse length appending, but things are shaping up such that I'm probably better off doing the
+length prepending thing.
+
+One other thought: does it really make sense to do the bit flagging _for every single message_? This requires
+writing a message - probably a small one <1 MB, and then flagging the bit in a second disk flush. That's two disk writes
+per record and doesn't seem efficient. I've been avoiding doing so, but it may make sense to batch at this point;
+length prepending may make more sense on the batch level rather than for a single message.
+
+FP talk about why I don't like ByteBuffers: 
+
+```kotlin
+    private fun confirmLastBlockIntegrity(
+        channel: FileChannel,
+        lockStart: Long,
+        fileSizeOnceLockAcquired: Long
+    ) {
+        readBuffer.clear()
+        readBuffer.limit(BLOCK_END_RECORD_SIZE)
+        channel.read(readBuffer, lockStart)
+        val maybeBlockEndRecord = getSignalBitRecords(
+            readBuffer,
+            lockStart,
+            fileSizeOnceLockAcquired,
+            listOf(ControlTopic.BLOCK_START.value),
+            true
+        )
+//...
+  fun getSignalBitRecords(
+    readBuffer: ByteBuffer,
+    initialOffset: Long,
+    finalOffset: Long,
+    subscribedTopics: List<ByteArray>,
+    //logger: Logger,
+    isEndOfFetch: Boolean = false
+  ): GetSignalRecordsResult {
+    val records = ArrayList<PuroRecord>()
+    var offset = initialOffset
+    var truncationAbnormality = false // Only matters if end-of-fetch
+
+    readBuffer.position(initialOffset.toInt()) //Saftey issue
+```
 
 ### 2026-01-07
 
