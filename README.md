@@ -42,8 +42,8 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 
 - [x] Producer class, with runtime exception on integrity failure
 - [ ] Consumer class
+- [ ] Producer class segment cleanup/large reads
 - [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
-- [ ] Producer class segment cleanup
 - [ ] Producer segment retermination
 - [ ] Consumer handling segment cleanup deletion
 - [ ] Producer active segment change handling

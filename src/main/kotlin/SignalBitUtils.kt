@@ -1,5 +1,4 @@
 import java.nio.ByteBuffer
-import kotlin.experimental.and
 
 // This is for common utilities between consumers and producers for signal bit
 // consumers and producers
@@ -23,8 +22,13 @@ sealed class GetSignalRecordsResult {
         val offset: Long,
         val largeRecordFragment: ByteBuffer,
         val expectedCrc: Byte,
-        val subrecordLength: Int
+        val targetBytes: Long
     ) : GetSignalRecordsResult()
+}
+
+sealed class GetLargeSignalRecordResult {
+    data class LargeRecordContinuation(val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult()
+    data class LargeRecordEnd(val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult()
 }
 
 fun rewindAll(vararg bytes: ByteBuffer) = bytes.forEach { it.rewind() }
@@ -108,9 +112,18 @@ fun getSignalBitRecords(
             }
             offset += totalLength
         } else if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second < readBuffer.capacity())) {
-            val fragmentBuffer = ByteBuffer.allocate(readBuffer.remaining())
-            fragmentBuffer.put(readBuffer)
-            return GetSignalRecordsResult.LargeRecordStart(offset, fragmentBuffer, expectedCrc, lengthData.first)
+            if (offset == 0L) { //It is acceptable to start a read with a large message
+                val fragmentBuffer = ByteBuffer.allocate(readBuffer.remaining())
+                fragmentBuffer.put(readBuffer)
+                return GetSignalRecordsResult.LargeRecordStart(
+                    offset,
+                    fragmentBuffer,
+                    expectedCrc,
+                    (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
+                )
+            } else { //Otherwise, return what we have at this point; subsequent reads will be by the large read function
+                return GetSignalRecordsResult.Success(records, offset)
+            }
         } else {
             truncationAbnormality = true
         }
@@ -128,11 +141,35 @@ fun getSignalBitRecords(
     }
 }
 
+fun getLargeSignalRecords(
+    targetBytes: Long,
+    collectedBytes: Long,
+    readBuffer: ByteBuffer,
+    initialOffset: Long,
+    finalOffset: Long
+): GetLargeSignalRecordResult {
+    readBuffer.position(initialOffset.toInt()) //Saftey issue
+    readBuffer.limit(finalOffset.toInt()) //Saftey issue
+
+    if (targetBytes >= collectedBytes) throw IllegalArgumentException("Has collected more than the target bytes")
+
+    if (finalOffset - initialOffset >= targetBytes - collectedBytes) {
+        val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey
+        fragmentBuffer.put(readBuffer)
+        return GetLargeSignalRecordResult.LargeRecordEnd(fragmentBuffer)
+    } else {
+        val fragmentBuffer = ByteBuffer.allocate((finalOffset - initialOffset).toInt()) // Saftey
+        fragmentBuffer.put(readBuffer)
+        return GetLargeSignalRecordResult.LargeRecordContinuation(fragmentBuffer)
+    }
+}
+
 fun buildProtoRecordAtIndex(index: Int, record: PuroRecord, protoRecords: Array<SerialisedPuroRecord?>): Int {
     val (serialisedRecord, recordLength) = record.toSerialised()
     protoRecords[index] = serialisedRecord
     return recordLength
 }
+
 fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
     val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
 

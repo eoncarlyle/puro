@@ -89,84 +89,6 @@ fun isRelevantTopic(
 ): Boolean = subscribedTopics.any { it.contentEquals(topic) } || ControlTopic.entries.toTypedArray()
     .any { it.value.contentEquals(topic) }
 
-fun getRecords(
-    readBuffer: ByteBuffer,
-    initialOffset: Long,
-    finalOffset: Long,
-    subscribedTopics: List<ByteArray>,
-    logger: Logger,
-    isEndOfFetch: Boolean = false
-): Triple<List<PuroRecord>, Long, GetSignalRecordsAbnormality?> {
-    val records = ArrayList<PuroRecord>()
-    var offset = initialOffset
-    var truncationAbnormality = false // Only matters if end-of-fetch
-
-    readBuffer.position(initialOffset.toInt()) //Saftey issue
-    readBuffer.limit(finalOffset.toInt()) //Saftey issue
-
-    while (readBuffer.hasRemaining()) {
-        val expectedCrc = readBuffer.get()
-
-        val lengthData = readBuffer.readSafety()?.fromVlq()
-        val topicLengthData = readBuffer.readSafety()?.fromVlq()
-        val topicMetadata = if (topicLengthData != null) {
-            readBuffer.getSafeArraySlice(topicLengthData.first)
-        } else null
-
-        //TODO: Subject this to microbenchmarks, not sure if this actually matters
-        if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics)) {
-            if (lengthData != null && (RECORD_CRC_BYTES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
-                offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
-                continue
-            }
-        }
-        val keyMetadata = readBuffer.readSafety()?.fromVlq()
-        val keyData = if (keyMetadata != null) {
-            readBuffer.getSafeBufferSlice(keyMetadata.first)
-        } else null
-
-        val valueData = if (lengthData != null && topicLengthData != null && keyMetadata != null) {
-            readBuffer.getSafeBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetadata.second - keyMetadata.first)
-        } else null
-
-        // The else branch isn't advancing the offset because it is possible that this is the next batch
-        // TODO: while the reasoning above is sound, but we now have a baked in assumption that the only time
-        // TODO: ...we will have bad messages is for the outside of fetches. Should throw if this is not the case,
-        // TODO: ...this is now maked as 'Fetch interior failures' in the readme
-        if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetadata != null && keyData != null && valueData != null) {
-            val (subrecordLength, encodedSubrecordLengthBitCount, crc1) = lengthData
-            val (_, _, crc2) = topicLengthData // _,_ are topic length and bit count
-            val (topic, crc3) = topicMetadata
-            val (_, _, crc4) = keyMetadata  //_,_ are key length and bit count
-            val (key, crc5) = keyData
-            val (value, crc6) = valueData
-
-            val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
-            // Equivalent to:
-            //val subrecordLength = topicLengthBitCount + topicLength + keyLengthBitCount + keyLength + value.capacity()
-            val totalLength = RECORD_CRC_BYTES + encodedSubrecordLengthBitCount + subrecordLength
-
-            if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
-                records.add(PuroRecord(topic, key, value))
-            } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
-                val abnormality = if (isEndOfFetch || readBuffer.hasRemaining()) {
-                    GetSignalRecordsAbnormality.RecordsAfterTombstone
-                } else {
-                    GetSignalRecordsAbnormality.StandardTombstone
-                }
-                return Triple(records, offset, abnormality)
-            }
-
-            // These are necessarily 'interior' messages.
-            offset += totalLength
-        } else {
-            truncationAbnormality = true
-        }
-    }
-
-    return Triple(records, offset, if (isEndOfFetch && truncationAbnormality) GetSignalRecordsAbnormality.Truncation else null)
-}
-
 fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
     //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
     var subrecordLength = subrecordLengthMetaLengthSum - 1
@@ -253,7 +175,7 @@ class PuroConsumer(
                 path
                     ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
                 // See README 'raggged start'
-                segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder ))
+                segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder))
             }
         }
     }
@@ -306,7 +228,8 @@ class PuroConsumer(
         logger.info("Starting Consumer")
         Thread {
             watcherPreInitialisation()
-            watcher?.watch() }.start()
+            watcher?.watch()
+        }.start()
         logger.info("Consumer Directory Watcher Configured")
 
         Thread {
@@ -468,47 +391,6 @@ class PuroConsumer(
         }
     }
 
-    // I think there is no reason to have this anymore but I don't want to delete it just yet
-    @Deprecated("Nonfunctional with signal bits")
-    private fun onHardTransitionCleanup(transition: FetchSuccess.HardTransition) {
-        val subrecordLengthMetaLengthSum = transition.abnormalOffsetWindowStop - transition.abnormalOffsetWindowStart
-        getConsumedSegmentChannel().use { channel ->
-            var lock: FileLock?
-            do {
-                lock = channel.tryLock(transition.abnormalOffsetWindowStart, subrecordLengthMetaLengthSum, false)
-                if (lock == null) {
-                    Thread.sleep(retryDelay) // Should eventually give up
-                }
-            } while (lock == null)
-            val recordBuffer = ByteBuffer.allocate(subrecordLengthMetaLengthSum.toInt()) //Saftey!
-            channel.position(transition.abnormalOffsetWindowStart)
-            channel.read(recordBuffer)
-            val topic = getTopicOnPossiblyTruncatedMessage(recordBuffer)
-
-            if (topic.equals(ControlTopic.INVALID_MESSAGE)) {
-                logger.info("Hard transition record cleaned by another consumer")
-            } else {
-                val subrecordLength = hardTransitionSubrecordLength(subrecordLengthMetaLengthSum.toInt())
-                // Matching the questionable convention in producer, should be changed when the producer changes
-                val encodedSubrecordLength = subrecordLength.toVlqEncoding()
-
-                val cleanupRecord = ByteBuffer.allocate(RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength)
-                cleanupRecord.put(0xFF.toByte())
-                cleanupRecord.put(encodedSubrecordLength)
-                cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value.size.toVlqEncoding())
-                cleanupRecord.put(ControlTopic.INVALID_MESSAGE.value)
-                cleanupRecord.rewind()
-
-                channel.position(transition.abnormalOffsetWindowStart)
-                channel.write(cleanupRecord)
-            }
-        }
-
-        if (transition.recordsAfterTombstone) {
-            //reterminateSegment()
-        }
-    }
-
     //TODO This will not work with signal bits, but keeping this here for now
     private fun reterminateSegment() {
         getConsumedSegmentChannel().use { channel ->
@@ -549,6 +431,8 @@ class PuroConsumer(
         // name the return variables that would be mapped to fields by the caller and I used a `read` as a prefix
         var readOffset = startingReadOffset
         logger.info("Starting read offset $readOffset")
+
+        var largeReadBuffers = ArrayList<ByteBuffer>()
         val steps = getStepCount(producerOffset - readOffset)
 
         val readRecords = ArrayList<PuroRecord>()
@@ -567,31 +451,52 @@ class PuroConsumer(
             fileChannel.read(readBuffer)
             readBuffer.flip()
 
-            val (batchRecords, offsetChange, abnormality) = getRecords(
-                readBuffer,
-                0,
-                if (isLastBatch) {
-                    (producerOffset - readOffset) % readBufferSize
-                } else {
-                    readBufferSize.toLong()
-                },
-                subscribedTopics,
-                logger,
-                isEndOfFetch = isLastBatch
-            )
-            lastAbnormality = abnormality
+            //val (batchRecords, offsetChange, abnormality) = getSignalBitRecords(
 
-            readRecords.addAll(batchRecords)
-            logger.info("Offset change $offsetChange")
-            readOffset += offsetChange
+            if (largeReadBuffers.isEmpty()) {
+                val getSignalRecordsResult = getSignalBitRecords(
+                    readBuffer,
+                    0,
+                    if (isLastBatch) {
+                        (producerOffset - readOffset) % readBufferSize
+                    } else {
+                        readBufferSize.toLong()
+                    },
+                    subscribedTopics,
+                    isEndOfFetch = isLastBatch
+                )
 
-            if (isLastBatch && abnormality == GetSignalRecordsAbnormality.Truncation) {
-                readAbnormalOffsetWindow = consumerOffset to producerOffset
-            } else if (abnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
-                abnormality == GetSignalRecordsAbnormality.StandardTombstone && step < (steps - 1)
-            ) {
-                lastAbnormality = abnormality
-                break
+
+                when (getSignalRecordsResult) {
+                    is GetSignalRecordsResult.Success -> {
+                        readRecords.addAll(getSignalRecordsResult.records)
+                        logger.info("Offset change ${getSignalRecordsResult.offset}")
+                        readOffset += getSignalRecordsResult.offset
+                    }
+
+                    is GetSignalRecordsResult.StandardAbnormality -> {
+                        lastAbnormality = getSignalRecordsResult.abnormality
+                        readRecords.addAll(getSignalRecordsResult.records)
+                        logger.info("Offset change ${getSignalRecordsResult.offset}")
+
+                        // As of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
+                        if (isLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
+                            readAbnormalOffsetWindow = consumerOffset to producerOffset
+                        } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
+                            lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && step < (steps - 1)
+                        ) {
+                            break
+                        }
+                        readOffset += getSignalRecordsResult.offset
+                    }
+
+                    is GetSignalRecordsResult.LargeRecordStart -> {
+
+                    }
+                }
+            } else {
+                // TODO: need true consumer state, need to store large reads, probably with actual type model: otherwise can't store the expected length
+                getLargeSignalRecords()
             }
         }
 
