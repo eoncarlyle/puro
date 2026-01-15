@@ -126,6 +126,8 @@ class PuroConsumer(
     private var consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
     private var consumerOffset = 0L
     private var currentConsumerLocked = false
+    private var readState: ReadState = ReadState.Standard
+
 
     val readBuffer = ByteBuffer.allocate(readBufferSize)
     private var abnormalOffsetWindow: Pair<Long, Long>? = null
@@ -349,6 +351,7 @@ class PuroConsumer(
                     return happyPathFetch(fileChannel, records, producerOffset)
                 },
                 ifLeft = {
+                    // TODO This will not work with signal bits, but keeping this here for now
                     // Hard producer transition: last producer failed, but new messages not interrupted
                     readBuffer.rewind()
                     // Off-by-one possibility
@@ -432,7 +435,6 @@ class PuroConsumer(
         var readOffset = startingReadOffset
         logger.info("Starting read offset $readOffset")
 
-        var largeReadBuffers = ArrayList<ByteBuffer>()
         val steps = getStepCount(producerOffset - readOffset)
 
         val readRecords = ArrayList<PuroRecord>()
@@ -452,54 +454,76 @@ class PuroConsumer(
             readBuffer.flip()
 
             //val (batchRecords, offsetChange, abnormality) = getSignalBitRecords(
+            when (readState) {
+                is ReadState.Standard -> {
+                    val getSignalRecordsResult = getSignalBitRecords(
+                        readBuffer,
+                        0,
+                        if (isLastBatch) {
+                            (producerOffset - readOffset) % readBufferSize
+                        } else {
+                            readBufferSize.toLong()
+                        },
+                        subscribedTopics,
+                        isEndOfFetch = isLastBatch
+                    )
 
-            if (largeReadBuffers.isEmpty()) {
-                val getSignalRecordsResult = getSignalBitRecords(
-                    readBuffer,
-                    0,
-                    if (isLastBatch) {
-                        (producerOffset - readOffset) % readBufferSize
-                    } else {
-                        readBufferSize.toLong()
-                    },
-                    subscribedTopics,
-                    isEndOfFetch = isLastBatch
-                )
-
-
-                when (getSignalRecordsResult) {
-                    is GetSignalRecordsResult.Success -> {
-                        readRecords.addAll(getSignalRecordsResult.records)
-                        logger.info("Offset change ${getSignalRecordsResult.offset}")
-                        readOffset += getSignalRecordsResult.offset
-                    }
-
-                    is GetSignalRecordsResult.StandardAbnormality -> {
-                        lastAbnormality = getSignalRecordsResult.abnormality
-                        readRecords.addAll(getSignalRecordsResult.records)
-                        logger.info("Offset change ${getSignalRecordsResult.offset}")
-
-                        // As of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
-                        if (isLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
-                            readAbnormalOffsetWindow = consumerOffset to producerOffset
-                        } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
-                            lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && step < (steps - 1)
-                        ) {
-                            break
+                    when (getSignalRecordsResult) {
+                        is GetSignalRecordsResult.Success -> {
+                            readRecords.addAll(getSignalRecordsResult.records)
+                            logger.info("Offset change ${getSignalRecordsResult.offset}")
+                            readOffset += getSignalRecordsResult.offset
                         }
-                        readOffset += getSignalRecordsResult.offset
-                    }
 
-                    is GetSignalRecordsResult.LargeRecordStart -> {
+                        is GetSignalRecordsResult.StandardAbnormality -> {
+                            lastAbnormality = getSignalRecordsResult.abnormality
+                            readRecords.addAll(getSignalRecordsResult.records)
+                            logger.info("Offset change ${getSignalRecordsResult.offset}")
 
+                            // As of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
+                            if (isLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
+                                readAbnormalOffsetWindow = consumerOffset to producerOffset
+                            } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
+                                lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && step < (steps - 1)
+                            ) {
+                                break
+                            }
+                            readOffset += getSignalRecordsResult.offset
+                        }
+
+                        is GetSignalRecordsResult.LargeRecordStart -> {
+                            readState = ReadState.LargeRead(
+                                arrayListOf(getSignalRecordsResult.largeRecordFragment),
+                                getSignalRecordsResult.expectedCrc, getSignalRecordsResult.targetBytes
+                            )
+                            readOffset += getSignalRecordsResult.offset
+                        }
                     }
                 }
-            } else {
-                // TODO: need true consumer state, need to store large reads, probably with actual type model: otherwise can't store the expected length
-                getLargeSignalRecords()
+
+                is ReadState.LargeRead -> {
+                    val currentReadState = readState as ReadState.LargeRead
+                    // Check if using capacity is relevant here
+                    val getLargeSignalRecordsResult = getLargeSignalRecords(
+                        currentReadState.targetBytes,
+                        currentReadState.largeRecordFragments.sumOf { it.capacity() }.toLong(),
+                        readBuffer,
+                        0,
+                        if (isLastBatch) {
+                            (producerOffset - readOffset) % readBufferSize
+                        } else {
+                            readBufferSize.toLong()
+                        }
+                    )
+
+                    // TODO
+                    when (getLargeSignalRecordsResult) {
+                        is GetLargeSignalRecordResult.LargeRecordContinuation -> {}
+                        is GetLargeSignalRecordResult.LargeRecordEnd -> {}
+                    }
+                }
             }
         }
-
         logger.info("Final read offset $readOffset")
 
         return StandardRead(
@@ -535,5 +559,14 @@ class PuroConsumer(
             } while (lock == null)
             return block(channel)
         }
+    }
+
+    private sealed class ReadState {
+        data object Standard : ReadState()
+        data class LargeRead(
+            val largeRecordFragments: ArrayList<ByteBuffer>,
+            val expectedCrc: Byte,
+            var targetBytes: Long
+        ) : ReadState()
     }
 }
