@@ -298,7 +298,8 @@ fun getLargeSignalRecords(
 
     if (finalOffset - initialOffset >= targetBytes - collectedBytes) {
         val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey
-        fragmentBuffer.put(readBuffer)
+
+        fragmentBuffer.put(initialOffset.toInt(), readBuffer, 0, (targetBytes - collectedBytes).toInt())
         return GetLargeSignalRecordResult.LargeRecordEnd(fragmentBuffer)
     } else {
         val fragmentBuffer = ByteBuffer.allocate((finalOffset - initialOffset).toInt()) // Saftey

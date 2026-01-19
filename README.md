@@ -62,7 +62,8 @@ value: byte[]
 ```
 
 - Subrecord length is the sum of the length of `topicLength`, `topic`, `keyLength`, `key`, and `value`
-- Total length is the sum of the length of `signal`, `crc`, and the number of bytes required to express `subrecordLength`
+- Total length is the sum of the length of `signal`, `crc`, and the number of bytes required to express
+  `subrecordLength`
 
 ## Development Log
 
@@ -78,22 +79,38 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-19
+
+re: `ba59e9b` The way that large reads work is counter to the idea of using steps in `standardRead`. The result was
+a truncated large message that was otherwise handled well. Rather than using steps to determine the required number of
+reads, the offset  should be used instead. This would be breaking JPL's 'The Power of 10' rules, but I'm going to go 
+out on a limb and say that Puro isn't quite as important as what JPL is doing.
+
+One-liner for decoding
+```shell
+ python3 -c "import sys; data=open('stream0.puro','rb').read(); print(', '.join(str(b if b<128 else b-256) for b in data))"
+```
+
+- I noticed three bytes were left out
+- I noticed the first byte buffer had 97 written bytes rather than 100
+- Rewind issue!
+
 ### 2026-01-18
 
 Would be good to talk about
+
 1) Transition from consumer-heavy to signal bit
 2) Signal bit to batched bits
 
-
 ### 2026-01-11
 
-Rather than having some [discrete message batch](https://kafka.apache.org/41/implementation/message-format/), I 
-realised that the best way forward with signal bits is to use the existing message structure: two new `ControlTopic` 
+Rather than having some [discrete message batch](https://kafka.apache.org/41/implementation/message-format/), I
+realised that the best way forward with signal bits is to use the existing message structure: two new `ControlTopic`
 members. The first would be a signal bit message, and the final would be a non-VLQ integer message indicating the size
 of the block. The latter message would be fixed size owing to integer encoding, and would be enough information for the
-producer to read the relevant byte offset (but it would make more sense to read the entire message). This means that 
-a producer can 'drop in' without consuming the entire segment first. If a full integrity check needs to be done then 
-that changes things, but presumably I could write the producers now before moving over to the consumers - not that 
+producer to read the relevant byte offset (but it would make more sense to read the entire message). This means that
+a producer can 'drop in' without consuming the entire segment first. If a full integrity check needs to be done then
+that changes things, but presumably I could write the producers now before moving over to the consumers - not that
 it really matters all that much.
 
 Sublock size = length of entire block except the end block message
@@ -117,6 +134,7 @@ Also, I am finally changing 'total length' to 'subrecord length' in the message 
 
 The entire idea behind the signal bit is that it makes it possible for the following case to be recovered from in
 the simplest possible way
+
 1) Producer produces a bunch of events but dies halfway through, before it can toggle a signal bit
 2) A new producer starts producing
 3) A consumer starts consuming
@@ -137,47 +155,49 @@ writing a message - probably a small one <1 MB, and then flagging the bit in a s
 per record and doesn't seem efficient. I've been avoiding doing so, but it may make sense to batch at this point;
 length prepending may make more sense on the batch level rather than for a single message.
 
-FP talk about why I don't like ByteBuffers: 
+FP talk about why I don't like ByteBuffers:
 
 ```kotlin
     private fun confirmLastBlockIntegrity(
-        channel: FileChannel,
-        lockStart: Long,
-        fileSizeOnceLockAcquired: Long
-    ) {
-        readBuffer.clear()
-        readBuffer.limit(BLOCK_END_RECORD_SIZE)
-        channel.read(readBuffer, lockStart)
-        val maybeBlockEndRecord = getSignalBitRecords(
-            readBuffer,
-            lockStart,
-            fileSizeOnceLockAcquired,
-            listOf(ControlTopic.BLOCK_START.value),
-            true
-        )
-//...
-  fun getSignalBitRecords(
-    readBuffer: ByteBuffer,
-    initialOffset: Long,
-    finalOffset: Long,
-    subscribedTopics: List<ByteArray>,
-    //logger: Logger,
-    isEndOfFetch: Boolean = false
-  ): GetSignalRecordsResult {
-    val records = ArrayList<PuroRecord>()
-    var offset = initialOffset
-    var truncationAbnormality = false // Only matters if end-of-fetch
+    channel: FileChannel,
+    lockStart: Long,
+    fileSizeOnceLockAcquired: Long
+) {
+    readBuffer.clear()
+    readBuffer.limit(BLOCK_END_RECORD_SIZE)
+    channel.read(readBuffer, lockStart)
+    val maybeBlockEndRecord = getSignalBitRecords(
+        readBuffer,
+        lockStart,
+        fileSizeOnceLockAcquired,
+        listOf(ControlTopic.BLOCK_START.value),
+        true
+    )
 
-    readBuffer.position(initialOffset.toInt()) //Saftey issue
+    //...
+    fun getSignalBitRecords(
+        readBuffer: ByteBuffer,
+        initialOffset: Long,
+        finalOffset: Long,
+        subscribedTopics: List<ByteArray>,
+        //logger: Logger,
+        isEndOfFetch: Boolean = false
+    ): GetSignalRecordsResult {
+        val records = ArrayList<PuroRecord>()
+        var offset = initialOffset
+        var truncationAbnormality = false // Only matters if end-of-fetch
+
+        readBuffer.position(initialOffset.toInt()) //Saftey issue
 ```
 
 ### 2026-01-07
 
 I'm going to have to be careful about signal bit placement, I forget how endianness is established 'within' a bit to the
-extent that makes sense. 
+extent that makes sense.
 
-~~I don't think that truncation should be treated any differently than large message reads. If a truncated message ends up
-being failed I think that we need to record the initial offset at the 'start' of the large message run in order to 
+~~I don't think that truncation should be treated any differently than large message reads. If a truncated message ends
+up
+being failed I think that we need to record the initial offset at the 'start' of the large message run in order to
 properly account for this.~~
 
 Truncation vs large message is about if the message _could_ fit in the buffer
@@ -212,12 +232,12 @@ means iterating down the length of the segment. The producer equivalent of this 
 because this is just a matter of using some callbacks it isn't really the same.
 
 After the time away from the project I think the way to handle messages larger than the read buffer is to use a
-`ConsumerResult` that indicates 'start building the single message buffer'. This is going to destinguish between 
-'standard' and 'single-message' read patterns, so entering and exiting this mode will need to be done with care. But 
+`ConsumerResult` that indicates 'start building the single message buffer'. This is going to destinguish between
+'standard' and 'single-message' read patterns, so entering and exiting this mode will need to be done with care. But
 this would prevent any strange games with resizing buffers. This would require appending bits to a buffer as the partial
-reads come in. The length of the original message would then be used to understand what the stopping point is. I 
-would need to deal with any shorter messages that are emitted after the larger message. More trickily, we might need 
-to deal with `|.....long message, short message, short message, long message.....|`, but this shouldn't be awful to 
+reads come in. The length of the original message would then be used to understand what the stopping point is. I
+would need to deal with any shorter messages that are emitted after the larger message. More trickily, we might need
+to deal with `|.....long message, short message, short message, long message.....|`, but this shouldn't be awful to
 model with the right return values. Probably should explicitly model this all as an explicit state machine? Will need to
 think on this. But that is the final item on the signal bit list.
 

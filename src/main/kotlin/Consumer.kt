@@ -414,8 +414,10 @@ class PuroConsumer(
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
 
         var lastAbnormality: GetSignalRecordsAbnormality? = null
-        for (step in 0..<steps) {
-            val isLastBatch = (step == steps - 1)
+        var isLastBatch = false
+
+        while (!isLastBatch) {
+            isLastBatch = (producerOffset - readOffset) <= readBufferSize
 
             readBuffer.clear()
             if (isLastBatch) {
@@ -455,7 +457,7 @@ class PuroConsumer(
                             if (isLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
                                 readAbnormalOffsetWindow = consumerOffset to producerOffset
                             } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
-                                lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && step < (steps - 1)
+                                lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && !isLastBatch
                             ) {
                                 break
                             }
