@@ -4,6 +4,7 @@ import org.slf4j.Logger
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
@@ -415,12 +416,13 @@ class PuroConsumer(
 
         var lastAbnormality: GetSignalRecordsAbnormality? = null
         var isLastBatch = false
+        var isPossibleLastBatch = false
 
         while (!isLastBatch) {
-            isLastBatch = (producerOffset - readOffset) <= readBufferSize
+            isPossibleLastBatch = (producerOffset - readOffset) <= readBufferSize
 
             readBuffer.clear()
-            if (isLastBatch) {
+            if (isPossibleLastBatch) {
                 readBuffer.limit(((producerOffset - readOffset) % readBufferSize).toInt()) //Saftey!
             }
 
@@ -434,13 +436,14 @@ class PuroConsumer(
                     val getSignalRecordsResult = getSignalBitRecords(
                         readBuffer,
                         0,
-                        if (isLastBatch) {
+                        if (isPossibleLastBatch) {
                             (producerOffset - readOffset) % readBufferSize
                         } else {
                             readBufferSize.toLong()
                         },
                         subscribedTopics,
-                        isEndOfFetch = isLastBatch
+                        isEndOfFetch = isPossibleLastBatch,
+                        logger
                     )
 
                     when (getSignalRecordsResult) {
@@ -454,10 +457,10 @@ class PuroConsumer(
                             lastAbnormality = getSignalRecordsResult.abnormality
                             readRecords.addAll(getSignalRecordsResult.records)
                             // As of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
-                            if (isLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
+                            if (isPossibleLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
                                 readAbnormalOffsetWindow = consumerOffset to producerOffset
                             } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
-                                lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && !isLastBatch
+                                lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
                             ) {
                                 break
                             }
@@ -471,7 +474,7 @@ class PuroConsumer(
                                 arrayListOf(getSignalRecordsResult.largeRecordFragment),
                                 getSignalRecordsResult.targetBytes
                             )
-                            readOffset += getSignalRecordsResult.offset
+                            readOffset += getSignalRecordsResult.partialReadOffset
                         }
                     }
                 }
@@ -482,10 +485,11 @@ class PuroConsumer(
                     // Check if using position is relevant here
                     val getLargeSignalRecordsResult = getLargeSignalRecords(
                         currentConsumeState.targetBytes,
-                        currentConsumeState.largeRecordFragments.sumOf { it.position() }.toLong(), //! assumes buffers not rewound
+                        currentConsumeState.largeRecordFragments.sumOf { it.position() }
+                            .toLong(), //! assumes buffers not rewound
                         readBuffer,
                         0,
-                        if (isLastBatch) {
+                        if (isPossibleLastBatch) {
                             (producerOffset - readOffset) % readBufferSize
                         } else {
                             readBufferSize.toLong()
@@ -493,7 +497,8 @@ class PuroConsumer(
                     )
 
                     currentConsumeState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
-                    val offsetChange = getLargeSignalRecordsResult.byteBuffer.position()  //! assumes buffers not rewound
+                    val offsetChange =
+                        getLargeSignalRecordsResult.byteBuffer.position()  //! assumes buffers not rewound
                     logger.info("Large record offset change ${offsetChange}")
                     readOffset += offsetChange
 
@@ -505,6 +510,7 @@ class PuroConsumer(
                     )
                 }
             }
+            isLastBatch = isPossibleLastBatch && readOffset == producerOffset
         }
         logger.info("Final read offset $readOffset")
 
@@ -562,11 +568,16 @@ class PuroConsumer(
     // Consumer lock block: returns `false` if end-of-fetch abnormality
     private fun <T> withConsumerLock(position: Long, size: Long, block: (FileChannel) -> T): T {
         getConsumedSegmentChannel().use { channel ->
-            var lock: FileLock?
+            var lock: FileLock? = null
             do {
-                lock = channel.tryLock(position, size, true)
-                if (lock == null) {
-                    Thread.sleep(retryDelay) // Should eventually give up
+                try {
+                    lock = channel.tryLock(position, size, true)
+                    if (lock == null) {
+                        Thread.sleep(retryDelay) // Should eventually give up
+                    }
+                } catch (e: OverlappingFileLockException) {
+                    logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
+                    Thread.sleep(retryDelay)
                 }
             } while (lock == null)
             return block(channel)

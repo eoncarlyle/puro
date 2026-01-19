@@ -45,15 +45,15 @@ fun main() {
     val logger = LoggerFactory.getLogger("MainKt")
 
     Path("/tmp/puro/segment0.puro").deleteIfExists()
-    val producer = SignalBitProducer(Path("/tmp/puro"), 10)
+    val initialProducer = SignalBitProducer(Path("/tmp/puro"), 10)
 
-    val longerKey = """
+    val firstValue = """
     No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
-    deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by 
+    deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
     the lawful judgment of his equals or by the law of the land."
     """.trimIndent()
 
-    producer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), longerKey.toByteBuffer())))
+    initialProducer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())))
 
     val consumer = PuroConsumer(
         Path("/tmp/puro"),
@@ -65,6 +65,26 @@ fun main() {
         internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
     }
     consumer.run()
+
+    val secondValue = """
+    All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
+    or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
+    This, however, does not apply in time of war to merchants from a country that is at war with us. Any such 
+    merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
+    property, until we or our chief justice have discovered how our own merchants are being treated in the country 
+    at war with us. If our own merchants are safe they shall be safe too. 
+    """.trimIndent()
+
+    val thirdValue = """
+    To no one will we sell, to no one deny or delay right or justice. 
+    """.trimIndent()
+
+    initialProducer.send(
+        listOf(
+            PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
+            PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer())
+        )
+    )
 }
 
 /*

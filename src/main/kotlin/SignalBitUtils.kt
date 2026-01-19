@@ -1,3 +1,4 @@
+import org.slf4j.Logger
 import java.nio.ByteBuffer
 import kotlin.experimental.and
 
@@ -20,7 +21,7 @@ sealed class GetSignalRecordsResult {
     ) : GetSignalRecordsResult()
 
     data class LargeRecordStart(
-        val offset: Long,
+        val partialReadOffset: Long, // This does not represent finished reads
         val largeRecordFragment: ByteBuffer,
         val targetBytes: Long
     ) : GetSignalRecordsResult()
@@ -73,8 +74,8 @@ fun getSignalBitRecords(
     initialOffset: Long,
     finalOffset: Long,
     subscribedTopics: List<ByteArray>,
-    //logger: Logger,
-    isEndOfFetch: Boolean = false
+    isEndOfFetch: Boolean = false,
+    logger: Logger?
 ): GetSignalRecordsResult {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
@@ -90,10 +91,12 @@ fun getSignalBitRecords(
 
         if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second > readBuffer.capacity())) {
             if (offset == 0L) { //It is acceptable to start a read with a large message
-                val fragmentBuffer = ByteBuffer.allocate(readBuffer.remaining())
+                val fragmentBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + lengthData.second + readBuffer.remaining())
+                fragmentBuffer.put(expectedCrc)
+                fragmentBuffer.put(lengthData.first.toVlqEncoding())
                 fragmentBuffer.put(readBuffer)
                 return GetSignalRecordsResult.LargeRecordStart(
-                    offset,
+                    finalOffset, // Not to be confusing but this should be the same as `readBuffer.capacity()`
                     fragmentBuffer,
                     (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
                 )
@@ -113,7 +116,7 @@ fun getSignalBitRecords(
                 offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
                 continue
             }
-        }
+        } else logger?.debug("${expectedCrc}, ${topicMetadata.first.decodeToString()}")
         val keyMetadata = readBuffer.readSafety()?.fromVlq()
         val keyData = if (keyMetadata != null) {
             readBuffer.getSafeBufferSlice(keyMetadata.first)
@@ -203,19 +206,28 @@ private fun multiFragmentFromVlq(largeRecordFragments: List<ByteBuffer>, initial
 private fun multiFragmentArraySlice(
     largeRecordFragments: ArrayList<ByteBuffer>,
     initialFragmentIndex: Int,
-    length: Int
+    requiredBytes: Int
 ): Triple<ByteArray, Byte, Int> {
     val remainingBytes =
         largeRecordFragments.slice(initialFragmentIndex..<largeRecordFragments.size).sumOf { it.remaining() }
     var fragmentIndex = initialFragmentIndex
-    if (remainingBytes < length) {
+    if (remainingBytes < requiredBytes) {
         throw IllegalStateException("Large message consumer integrity issue")
     }
-    val arraySlice = ByteArray(length) //!! Allocation
-
-    while (fragmentIndex < largeRecordFragments.size - 1) {
-        largeRecordFragments[fragmentIndex].get(arraySlice)
-        fragmentIndex++
+    val arraySlice = ByteArray(requiredBytes) //!! Allocation
+    var bytesWritten = 0
+    var batchWriteLength = 0
+    while (bytesWritten < requiredBytes) {
+        while (!largeRecordFragments[fragmentIndex].hasRemaining()) {
+            fragmentIndex++
+            if (fragmentIndex > largeRecordFragments.size - 1) {
+                throw IllegalStateException("Large message consumer integrity issue")
+            }
+        }
+        batchWriteLength = requiredBytes.coerceAtMost(largeRecordFragments[fragmentIndex].remaining())
+            .coerceAtMost(requiredBytes - bytesWritten)
+        largeRecordFragments[fragmentIndex].get(arraySlice, bytesWritten, batchWriteLength)
+        bytesWritten += batchWriteLength
     }
     return Triple(arraySlice, crc8(arraySlice), fragmentIndex)
 }

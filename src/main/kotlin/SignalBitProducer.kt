@@ -1,3 +1,4 @@
+import org.slf4j.Logger
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -121,7 +122,8 @@ class SignalBitProducer {
             0, //lockStart,
             fileSizeOnceLockAcquired - lockStart,
             listOf(ControlTopic.BLOCK_END.value),
-            true
+            true,
+            null
         )
         readBuffer.flip()
 
@@ -151,7 +153,8 @@ class SignalBitProducer {
             0,
             BLOCK_START_RECORD_SIZE.toLong(),
             listOf(ControlTopic.BLOCK_START.value),
-            true
+            true,
+            null
         )
         readBuffer.flip()
 
