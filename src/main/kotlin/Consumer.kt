@@ -61,11 +61,11 @@ fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
     val start = recordBuffer.position()
     val expectedCrc = recordBuffer.get()
     val (encodedSubrecordLength, _, crc1) = recordBuffer.fromVlq()
-    val (topicLength, topicLengthBitCount, crc2) = recordBuffer.fromVlq()
+    val (topicLength, topicLengthByteCount, crc2) = recordBuffer.fromVlq()
     val (topic, crc3) = recordBuffer.getArraySlice(topicLength)
-    val (keyLength, keyLengthBitCount, crc4) = recordBuffer.fromVlq()
+    val (keyLength, keyLengthByteCount, crc4) = recordBuffer.fromVlq()
     val (key, crc5) = recordBuffer.getBufferSlice(keyLength)
-    val (value, crc6) = recordBuffer.getBufferSlice(encodedSubrecordLength - topicLengthBitCount - topicLength - keyLengthBitCount - keyLength)
+    val (value, crc6) = recordBuffer.getBufferSlice(encodedSubrecordLength - topicLengthByteCount - topicLength - keyLengthByteCount - keyLength)
 
     val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
 
@@ -126,7 +126,7 @@ class PuroConsumer(
     private var consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
     private var consumerOffset = 0L
     private var currentConsumerLocked = false
-    private var readState: ReadState = ReadState.Standard
+    private var consumeState: ConsumeState = ConsumeState.Standard
 
 
     val readBuffer = ByteBuffer.allocate(readBufferSize)
@@ -307,7 +307,6 @@ class PuroConsumer(
         }
     }
 
-
     private fun happyPathFetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
@@ -394,31 +393,6 @@ class PuroConsumer(
         }
     }
 
-    //TODO This will not work with signal bits, but keeping this here for now
-    private fun reterminateSegment() {
-        getConsumedSegmentChannel().use { channel ->
-            val fileSize = channel.size()
-            var lock: FileLock?
-            do {
-                lock = channel.tryLock(fileSize - 5, Long.MAX_VALUE - fileSize, false)
-                if (lock == null) {
-                    Thread.sleep(retryDelay)
-                }
-            } while (lock == null)
-            val recordBuffer = ByteBuffer.allocate(5)
-            channel.read(recordBuffer)
-            getRecord(recordBuffer).onRight { (record, _) ->
-                if (record.topic.contentEquals(ControlTopic.SEGMENT_TOMBSTONE.value)) {
-                    logger.info("Segment reterminated by another consumer")
-                    return
-                }
-            }
-
-            channel.position(fileSize)
-            channel.write(ByteBuffer.wrap(TOMBSTONE_RECORD))
-        }
-    }
-
     private fun getStepCount(offsetDelta: Long) = (if (offsetDelta % readBufferSize == 0L) {
         (offsetDelta / readBufferSize)
     } else {
@@ -454,8 +428,8 @@ class PuroConsumer(
             readBuffer.flip()
 
             //val (batchRecords, offsetChange, abnormality) = getSignalBitRecords(
-            when (readState) {
-                is ReadState.Standard -> {
+            when (consumeState) {
+                is ConsumeState.Standard -> {
                     val getSignalRecordsResult = getSignalBitRecords(
                         readBuffer,
                         0,
@@ -478,8 +452,6 @@ class PuroConsumer(
                         is GetSignalRecordsResult.StandardAbnormality -> {
                             lastAbnormality = getSignalRecordsResult.abnormality
                             readRecords.addAll(getSignalRecordsResult.records)
-                            logger.info("Offset change ${getSignalRecordsResult.offset}")
-
                             // As of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
                             if (isLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
                                 readAbnormalOffsetWindow = consumerOffset to producerOffset
@@ -488,25 +460,28 @@ class PuroConsumer(
                             ) {
                                 break
                             }
+                            logger.info("Standard record offset change ${getSignalRecordsResult.offset}")
                             readOffset += getSignalRecordsResult.offset
                         }
 
                         is GetSignalRecordsResult.LargeRecordStart -> {
-                            readState = ReadState.LargeRead(
+                            logger.info("Consumer state transition to large")
+                            consumeState = ConsumeState.Large(
                                 arrayListOf(getSignalRecordsResult.largeRecordFragment),
-                                getSignalRecordsResult.expectedCrc, getSignalRecordsResult.targetBytes
+                                getSignalRecordsResult.targetBytes
                             )
                             readOffset += getSignalRecordsResult.offset
                         }
                     }
                 }
 
-                is ReadState.LargeRead -> {
-                    val currentReadState = readState as ReadState.LargeRead
-                    // Check if using capacity is relevant here
+                is ConsumeState.Large -> {
+                    // TODO consider if proving this type via thread saftey actually matters
+                    val currentConsumeState = consumeState as ConsumeState.Large
+                    // Check if using position is relevant here
                     val getLargeSignalRecordsResult = getLargeSignalRecords(
-                        currentReadState.targetBytes,
-                        currentReadState.largeRecordFragments.sumOf { it.capacity() }.toLong(),
+                        currentConsumeState.targetBytes,
+                        currentConsumeState.largeRecordFragments.sumOf { it.position() }.toLong(), //! assumes buffers not rewound
                         readBuffer,
                         0,
                         if (isLastBatch) {
@@ -516,11 +491,17 @@ class PuroConsumer(
                         }
                     )
 
-                    // TODO
-                    when (getLargeSignalRecordsResult) {
-                        is GetLargeSignalRecordResult.LargeRecordContinuation -> {}
-                        is GetLargeSignalRecordResult.LargeRecordEnd -> {}
-                    }
+                    currentConsumeState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
+                    val offsetChange = getLargeSignalRecordsResult.byteBuffer.position()  //! assumes buffers not rewound
+                    logger.info("Large record offset change ${offsetChange}")
+                    readOffset += offsetChange
+
+                    lastAbnormality = deserialiseLargeReadWithAbnormalityTracking(
+                        getLargeSignalRecordsResult,
+                        currentConsumeState,
+                        readRecords,
+                        lastAbnormality
+                    )
                 }
             }
         }
@@ -536,6 +517,36 @@ class PuroConsumer(
                 else -> ReadTombstoneStatus.NotTombstoned
             }
         )
+    }
+
+    private fun deserialiseLargeReadWithAbnormalityTracking(
+        getLargeSignalRecordsResult: GetLargeSignalRecordResult,
+        currentConsumeState: ConsumeState.Large,
+        readRecords: ArrayList<PuroRecord>,
+        lastAbnormality: GetSignalRecordsAbnormality?
+    ): GetSignalRecordsAbnormality? {
+        var abnormality = lastAbnormality
+        if (getLargeSignalRecordsResult is GetLargeSignalRecordResult.LargeRecordEnd) {
+            when (val deserialisedLargeRead = deserialiseLargeRead(currentConsumeState, subscribedTopics)) {
+                is DeserialiseLargeReadResult.Standard -> {
+                    readRecords.add(deserialisedLargeRead.puroRecord)
+                }
+
+                is DeserialiseLargeReadResult.SegmentTombstone -> {
+                    readRecords.add(deserialisedLargeRead.puroRecord)
+                    abnormality = GetSignalRecordsAbnormality.StandardTombstone
+                }
+
+                is DeserialiseLargeReadResult.IrrelevantTopic -> {
+                    logger.info("Large message has irrelevant topic")
+                }
+
+                is DeserialiseLargeReadResult.CrcFailure -> logger.warn("CRC failure on large message")
+            }
+            logger.info("Consumer state transition to standard")
+            consumeState = ConsumeState.Standard
+        }
+        return abnormality
     }
 
     private fun getConsumedSegmentChannel(): FileChannel =
@@ -561,12 +572,29 @@ class PuroConsumer(
         }
     }
 
-    private sealed class ReadState {
-        data object Standard : ReadState()
-        data class LargeRead(
-            val largeRecordFragments: ArrayList<ByteBuffer>,
-            val expectedCrc: Byte,
-            var targetBytes: Long
-        ) : ReadState()
+    //TODO This will not work with signal bits, but keeping this here for now
+    private fun reterminateSegment() {
+        getConsumedSegmentChannel().use { channel ->
+            val fileSize = channel.size()
+            var lock: FileLock?
+            do {
+                lock = channel.tryLock(fileSize - 5, Long.MAX_VALUE - fileSize, false)
+                if (lock == null) {
+                    Thread.sleep(retryDelay)
+                }
+            } while (lock == null)
+            val recordBuffer = ByteBuffer.allocate(5)
+            channel.read(recordBuffer)
+            getRecord(recordBuffer).onRight { (record, _) ->
+                if (record.topic.contentEquals(ControlTopic.SEGMENT_TOMBSTONE.value)) {
+                    logger.info("Segment reterminated by another consumer")
+                    return
+                }
+            }
+
+            channel.position(fileSize)
+            channel.write(ByteBuffer.wrap(TOMBSTONE_RECORD))
+        }
     }
+
 }

@@ -78,6 +78,13 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-18
+
+Would be good to talk about
+1) Transition from consumer-heavy to signal bit
+2) Signal bit to batched bits
+
+
 ### 2026-01-11
 
 Rather than having some [discrete message batch](https://kafka.apache.org/41/implementation/message-format/), I 

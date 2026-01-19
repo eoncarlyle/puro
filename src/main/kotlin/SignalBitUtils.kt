@@ -1,4 +1,5 @@
 import java.nio.ByteBuffer
+import kotlin.experimental.and
 
 // This is for common utilities between consumers and producers for signal bit
 // consumers and producers
@@ -21,16 +22,36 @@ sealed class GetSignalRecordsResult {
     data class LargeRecordStart(
         val offset: Long,
         val largeRecordFragment: ByteBuffer,
-        val expectedCrc: Byte,
         val targetBytes: Long
     ) : GetSignalRecordsResult()
 }
 
-sealed class GetLargeSignalRecordResult {
-    data class LargeRecordContinuation(val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult()
-    data class LargeRecordEnd(val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult()
+sealed class GetLargeSignalRecordResult(open val byteBuffer: ByteBuffer) {
+    data class LargeRecordContinuation(override val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult(byteBuffer)
+    data class LargeRecordEnd(override val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult(byteBuffer)
 }
 
+sealed class DeserialiseLargeReadResult {
+    data object IrrelevantTopic : DeserialiseLargeReadResult()
+
+    data object CrcFailure : DeserialiseLargeReadResult()
+
+    data class Standard(val puroRecord: PuroRecord) : DeserialiseLargeReadResult()
+
+    data class SegmentTombstone(val puroRecord: PuroRecord) : DeserialiseLargeReadResult()
+}
+
+sealed class ConsumeState {
+    data object Standard : ConsumeState()
+    data class Large(
+        val largeRecordFragments: ArrayList<ByteBuffer>,
+        var targetBytes: Long
+    ) : ConsumeState()
+}
+
+private data class MultiFragmentVlq(val result: Int, val byteCount: Int, val crc8: Byte, val fragmentIndex: Int)
+
+fun rewindAll(bytes: List<ByteBuffer>) = bytes.forEach { it.rewind() }
 fun rewindAll(vararg bytes: ByteBuffer) = bytes.forEach { it.rewind() }
 fun getMessageCrc(
     encodedSubrecordLength: ByteBuffer,
@@ -63,9 +84,10 @@ fun getSignalBitRecords(
     readBuffer.limit(finalOffset.toInt()) //Saftey issue
 
     while (readBuffer.hasRemaining()) {
+        // Compare with getLargeRead
         val expectedCrc = readBuffer.get()
-        val lengthData = readBuffer.readSafety()?.fromVlq()
-        val topicLengthData = readBuffer.readSafety()?.fromVlq()
+        val lengthData = readBuffer.readSafety()?.fromVlq() //The readSaftey doesn't actually do anything
+        val topicLengthData = readBuffer.readSafety()?.fromVlq() //The readSaftey doesn't actually do anything
         val topicMetadata = if (topicLengthData != null) {
             readBuffer.getSafeArraySlice(topicLengthData.first)
         } else null
@@ -90,7 +112,7 @@ fun getSignalBitRecords(
         // TODO: while the reasoning above is sound, but we now have a baked in assumption that the only time
         // TODO: ...we will have bad messages is for the outside of fetches
         if (lengthData != null && topicLengthData != null && topicMetadata != null && keyMetadata != null && keyData != null && valueData != null) {
-            val (subrecordLength, encodedSubrecordLengthBitCount, crc1) = lengthData
+            val (subrecordLength, encodedSubrecordLengthByteCount, crc1) = lengthData
             val (_, _, crc2) = topicLengthData // _,_ are topic length and bit count
             val (topic, crc3) = topicMetadata
             val (_, _, crc4) = keyMetadata  //_,_ are key length and bit count
@@ -98,7 +120,7 @@ fun getSignalBitRecords(
             val (value, crc6) = valueData
 
             val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
-            val totalLength = RECORD_CRC_BYTES + encodedSubrecordLengthBitCount + subrecordLength
+            val totalLength = RECORD_CRC_BYTES + encodedSubrecordLengthByteCount + subrecordLength
 
             if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
                 records.add(PuroRecord(topic, key, value))
@@ -118,7 +140,6 @@ fun getSignalBitRecords(
                 return GetSignalRecordsResult.LargeRecordStart(
                     offset,
                     fragmentBuffer,
-                    expectedCrc,
                     (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
                 )
             } else { //Otherwise, return what we have at this point; subsequent reads will be by the large read function
@@ -138,6 +159,125 @@ fun getSignalBitRecords(
 
         truncationAbnormality -> throw IllegalStateException("This should never happen")
         else -> GetSignalRecordsResult.Success(records, offset)
+    }
+}
+
+private fun multiFragmentGet(largeRecordFragments: List<ByteBuffer>, fragmentIndex: Int) {
+
+}
+
+// Compare with `ByteBuffer.fromVlq`
+private fun multiFragmentFromVlq(largeRecordFragments: List<ByteBuffer>, initialFragmentIndex: Int): MultiFragmentVlq {
+    var fragmentIndex = initialFragmentIndex
+
+    while (!largeRecordFragments[fragmentIndex].hasRemaining()) {
+        fragmentIndex++
+        if (fragmentIndex > largeRecordFragments.size - 1) {
+            throw IllegalStateException("Large message consumer integrity issue")
+        }
+    }
+    var currentByte = largeRecordFragments[fragmentIndex].get()
+    var crc8 = crc8(currentByte)
+    var result = (currentByte and 0x7F).toInt()
+    var byteCount = 1
+
+    while ((currentByte and 0x80.toByte()) == 0x80.toByte()) {
+        while (!largeRecordFragments[fragmentIndex].hasRemaining()) {
+            fragmentIndex++
+            if (fragmentIndex > largeRecordFragments.size - 1) {
+                throw IllegalStateException("Large message consumer integrity issue")
+            }
+        }
+        currentByte = largeRecordFragments[fragmentIndex].get()
+        result += ((currentByte and 0x7F).toInt() shl (byteCount * 7))
+        crc8 = crc8.withCrc8(currentByte)
+        byteCount++
+    }
+
+    return MultiFragmentVlq(result, byteCount, crc8, fragmentIndex)
+}
+
+private fun multiFragmentArraySlice(
+    largeRecordFragments: ArrayList<ByteBuffer>,
+    initialFragmentIndex: Int,
+    length: Int
+): Triple<ByteArray, Byte, Int> {
+    val remainingBytes =
+        largeRecordFragments.slice(initialFragmentIndex..<largeRecordFragments.size).sumOf { it.remaining() }
+    var fragmentIndex = initialFragmentIndex
+    if (remainingBytes < length) {
+        throw IllegalStateException("Large message consumer integrity issue")
+    }
+    val arraySlice = ByteArray(length) //!! Allocation
+
+    while (fragmentIndex < largeRecordFragments.size - 1) {
+        largeRecordFragments[fragmentIndex].get(arraySlice)
+        fragmentIndex++
+    }
+    return Triple(arraySlice, crc8(arraySlice), fragmentIndex)
+}
+
+// Compare with getSignalBitRecords
+fun deserialiseLargeRead(
+    consumeState: ConsumeState.Large,
+    subscribedTopics: List<ByteArray>
+): DeserialiseLargeReadResult {
+    val largeRecordFragments = consumeState.largeRecordFragments
+    rewindAll(largeRecordFragments)
+    var fragmentIndex = 0
+
+    while (!largeRecordFragments[fragmentIndex].hasRemaining()) {
+        fragmentIndex++
+        if (fragmentIndex > largeRecordFragments.size - 1) {
+            throw IllegalStateException("Large message consumer integrity issue")
+        }
+    }
+    val expectedCrc = largeRecordFragments[fragmentIndex].get()
+    val lengthData = multiFragmentFromVlq(largeRecordFragments, fragmentIndex).also { fragmentIndex = it.fragmentIndex }
+    val topicLengthData =
+        multiFragmentFromVlq(largeRecordFragments, fragmentIndex).also { fragmentIndex = it.fragmentIndex }
+    val topicMetadata = multiFragmentArraySlice(largeRecordFragments, fragmentIndex, topicLengthData.result).also {
+        fragmentIndex = it.third
+    }
+
+    if (!isRelevantTopic(topicMetadata.first, subscribedTopics)) {
+        return DeserialiseLargeReadResult.IrrelevantTopic
+    }
+
+    val keyMetadata =
+        multiFragmentFromVlq(largeRecordFragments, fragmentIndex).also { fragmentIndex = it.fragmentIndex }
+    val keyData = multiFragmentArraySlice(largeRecordFragments, fragmentIndex, keyMetadata.result).also {
+        fragmentIndex = it.third
+    }
+
+    val valueLength =
+        lengthData.result - topicLengthData.byteCount - topicLengthData.result - keyMetadata.byteCount - keyMetadata.result
+    val valueData = multiFragmentArraySlice(largeRecordFragments, fragmentIndex, valueLength)
+
+    val (subrecordLength, encodedSubrecordLengthByteCount, crc1) = lengthData
+    val (_, _, crc2) = topicLengthData // _,_ are topic length and byte count
+    val (topic, crc3) = topicMetadata
+    val (_, _, crc4) = keyMetadata  //_,_ are key length and bit count
+    val (key, crc5) = keyData
+    val (value, crc6) = valueData
+
+    val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
+    val totalLength = RECORD_CRC_BYTES + encodedSubrecordLengthByteCount + subrecordLength
+
+    return if ((expectedCrc == actualCrc) && subscribedTopics.any { it.contentEquals(topic) }) {
+        DeserialiseLargeReadResult.Standard(PuroRecord(topic, ByteBuffer.wrap(key), ByteBuffer.wrap(value)))
+    } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
+        // In practice you'd have to use comically small read buffers to hit this line - probably so small as to hit
+        // exceptions elsewhere
+        DeserialiseLargeReadResult.SegmentTombstone(
+            PuroRecord(
+                topic,
+                ByteBuffer.wrap(key),
+                ByteBuffer.wrap(value)
+            )
+        )
+    } else {
+        DeserialiseLargeReadResult.CrcFailure
     }
 }
 
