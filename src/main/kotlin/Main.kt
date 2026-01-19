@@ -1,5 +1,6 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
+import org.slf4j.LoggerFactory
 import java.nio.channels.FileChannel
 import java.nio.file.Path
 import kotlin.io.path.Path
@@ -41,10 +42,29 @@ fun directory() {
 
 
 fun main() {
+    val logger = LoggerFactory.getLogger("MainKt")
+
     Path("/tmp/puro/segment0.puro").deleteIfExists()
     val producer = SignalBitProducer(Path("/tmp/puro"), 10)
 
-    producer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), "testValue".toByteBuffer())))
+    val longerKey = """
+    No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
+    deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by 
+    the lawful judgment of his equals or by the law of the land."
+    """.trimIndent()
+
+    producer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), longerKey.toByteBuffer())))
+
+    val consumer = PuroConsumer(
+        Path("/tmp/puro"),
+        listOf("testTopic"),
+        logger,
+        startPoint = ConsumerStartPoint.StreamBeginning,
+        readBufferSize = 100
+    ) { record, internalLogger ->
+        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    }
+    consumer.run()
 }
 
 /*

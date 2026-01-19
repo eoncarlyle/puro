@@ -87,6 +87,21 @@ fun getSignalBitRecords(
         // Compare with getLargeRead
         val expectedCrc = readBuffer.get()
         val lengthData = readBuffer.readSafety()?.fromVlq() //The readSaftey doesn't actually do anything
+
+        if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second > readBuffer.capacity())) {
+            if (offset == 0L) { //It is acceptable to start a read with a large message
+                val fragmentBuffer = ByteBuffer.allocate(readBuffer.remaining())
+                fragmentBuffer.put(readBuffer)
+                return GetSignalRecordsResult.LargeRecordStart(
+                    offset,
+                    fragmentBuffer,
+                    (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
+                )
+            } else { //Otherwise, return what we have at this point; subsequent reads will be by the large read function
+                return GetSignalRecordsResult.Success(records, offset)
+            }
+        }
+
         val topicLengthData = readBuffer.readSafety()?.fromVlq() //The readSaftey doesn't actually do anything
         val topicMetadata = if (topicLengthData != null) {
             readBuffer.getSafeArraySlice(topicLengthData.first)
@@ -133,18 +148,6 @@ fun getSignalBitRecords(
                 return GetSignalRecordsResult.StandardAbnormality(records, offset, abnormality)
             }
             offset += totalLength
-        } else if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second < readBuffer.capacity())) {
-            if (offset == 0L) { //It is acceptable to start a read with a large message
-                val fragmentBuffer = ByteBuffer.allocate(readBuffer.remaining())
-                fragmentBuffer.put(readBuffer)
-                return GetSignalRecordsResult.LargeRecordStart(
-                    offset,
-                    fragmentBuffer,
-                    (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
-                )
-            } else { //Otherwise, return what we have at this point; subsequent reads will be by the large read function
-                return GetSignalRecordsResult.Success(records, offset)
-            }
         } else {
             truncationAbnormality = true
         }
@@ -291,7 +294,7 @@ fun getLargeSignalRecords(
     readBuffer.position(initialOffset.toInt()) //Saftey issue
     readBuffer.limit(finalOffset.toInt()) //Saftey issue
 
-    if (targetBytes >= collectedBytes) throw IllegalArgumentException("Has collected more than the target bytes")
+    if (targetBytes < collectedBytes) throw IllegalArgumentException("Has collected more than the target bytes")
 
     if (finalOffset - initialOffset >= targetBytes - collectedBytes) {
         val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey

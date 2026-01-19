@@ -109,7 +109,7 @@ class PuroConsumer(
     val logger: Logger,
     val readBufferSize: Int = 8192,
     val startPoint: ConsumerStartPoint = ConsumerStartPoint.Latest,
-    val onMessage: (PuroRecord) -> Unit, //TODO add logger
+    val onMessage: (PuroRecord, Logger) -> Unit,
 ) : Runnable {
     companion object {
         private val retryDelay = 10.milliseconds.toJavaDuration()
@@ -262,9 +262,8 @@ class PuroConsumer(
     }
 
     private fun ArrayList<PuroRecord>.onMessages() {
-        //TODO: remove the filter once the getMessage optimisation taken care of?
-        this.filter { r -> subscribedTopics.any { it.contentEquals(r.topic) } }
-            .forEach { r -> onMessage(r) }
+        //this.filter { r -> subscribedTopics.any { it.contentEquals(r.topic) } } //Already filtered
+        this.forEach { r -> onMessage(r, logger) }
     }
 
     private fun onConsumedSegmentAppend(producerOffset: Long) {
@@ -571,30 +570,4 @@ class PuroConsumer(
             return block(channel)
         }
     }
-
-    //TODO This will not work with signal bits, but keeping this here for now
-    private fun reterminateSegment() {
-        getConsumedSegmentChannel().use { channel ->
-            val fileSize = channel.size()
-            var lock: FileLock?
-            do {
-                lock = channel.tryLock(fileSize - 5, Long.MAX_VALUE - fileSize, false)
-                if (lock == null) {
-                    Thread.sleep(retryDelay)
-                }
-            } while (lock == null)
-            val recordBuffer = ByteBuffer.allocate(5)
-            channel.read(recordBuffer)
-            getRecord(recordBuffer).onRight { (record, _) ->
-                if (record.topic.contentEquals(ControlTopic.SEGMENT_TOMBSTONE.value)) {
-                    logger.info("Segment reterminated by another consumer")
-                    return
-                }
-            }
-
-            channel.position(fileSize)
-            channel.write(ByteBuffer.wrap(TOMBSTONE_RECORD))
-        }
-    }
-
 }
