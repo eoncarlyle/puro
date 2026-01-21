@@ -88,8 +88,9 @@ fun isRelevantTopic(
     topic: ByteArray,
     subscribedTopics: List<ByteArray>,
     includeControlTopics: Boolean,
-): Boolean = subscribedTopics.any { it.contentEquals(topic) } || (includeControlTopics && ControlTopic.entries.toTypedArray()
-    .any { it.value.contentEquals(topic) })
+): Boolean =
+    subscribedTopics.any { it.contentEquals(topic) } || (includeControlTopics && ControlTopic.entries.toTypedArray()
+        .any { it.value.contentEquals(topic) })
 
 fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
     //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
@@ -236,6 +237,8 @@ class PuroConsumer(
         }.start()
         logger.info("Consumer Directory Watcher Configured")
 
+        catchupThread().start()
+
         Thread {
             while (true) {
                 val (producerOffset, incomingSegmentOrder) = segmentChangeQueue.take()
@@ -284,7 +287,7 @@ class PuroConsumer(
             when (it) {
                 is FetchSuccess.CleanFetch -> {
                     records.onMessages()
-                    logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
+                    //logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
                 }
 
                 is FetchSuccess.CleanSegmentClosure -> {
@@ -293,13 +296,11 @@ class PuroConsumer(
                 }
 
                 is FetchSuccess.RecordsAfterTombstone -> {
-                    //reterminateSegment()
                     currentConsumerLocked = true
                     records.onMessages()
                 }
 
                 is FetchSuccess.HardTransition -> {
-                    //onHardTransitionCleanup(it)
                     records.onMessages()
                 }
             }
@@ -418,7 +419,7 @@ class PuroConsumer(
 
         var lastAbnormality: GetSignalRecordsAbnormality? = null
         var isLastBatch = false
-        var isPossibleLastBatch = false
+        var isPossibleLastBatch: Boolean
 
         while (!isLastBatch) {
             isPossibleLastBatch = (producerOffset - readOffset) <= readBufferSize
@@ -458,7 +459,7 @@ class PuroConsumer(
                         is GetSignalRecordsResult.StandardAbnormality -> {
                             lastAbnormality = getSignalRecordsResult.abnormality
                             readRecords.addAll(getSignalRecordsResult.records)
-                            // As of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
+                            // Talk as of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
                             if (isPossibleLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
                                 readAbnormalOffsetWindow = consumerOffset to producerOffset
                             } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
@@ -500,7 +501,7 @@ class PuroConsumer(
 
                     currentConsumeState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
                     val offsetChange =
-                        getLargeSignalRecordsResult.byteBuffer.limit()  //! assumes buffers not rewound, also kinda annoying bug found here
+                        getLargeSignalRecordsResult.byteBuffer.limit()  //Talk: assumes buffers not rewound, also kinda annoying bug found here
                     logger.info("Large record offset change ${offsetChange}")
                     readOffset += offsetChange
 
@@ -537,8 +538,8 @@ class PuroConsumer(
         var abnormality = lastAbnormality
         if (getLargeSignalRecordsResult is GetLargeSignalRecordResult.LargeRecordEnd) {
             val bytes = currentConsumeState.largeRecordFragments.map { it.array() }.reduce { acc, any -> acc + any }
-            logger.info("[Consumer] multibyte: ${bytes.joinToString { it.toString() }}")
-            logger.info("[Consumer] multibyte message: ${bytes.decodeToString()}")
+            //logger.info("[Consumer] multibyte: ${bytes.joinToString { it.toString() }}")
+            //logger.info("[Consumer] multibyte message: ${bytes.decodeToString()}")
             when (val deserialisedLargeRead = deserialiseLargeRead(currentConsumeState, subscribedTopics)) {
                 is DeserialiseLargeReadResult.Standard -> {
                     readRecords.add(deserialisedLargeRead.puroRecord)
@@ -568,6 +569,26 @@ class PuroConsumer(
         val segment = getSegmentPath(streamDirectory, consumedSegmentOrder)
             ?: throw RuntimeException("This should never happen: non-existent segment requested for $consumedSegmentOrder")
         return segment
+    }
+
+    //The directory watcher isn't super great at
+    private fun catchupThread() = Thread {
+        Thread.sleep(100)
+        getConsumedSegmentChannel().use { channel ->
+            var lock: FileLock? = null
+            do {
+                try {
+                    lock = channel.tryLock(0, Long.MAX_VALUE, true)
+                    if (lock == null) {
+                        Thread.sleep(retryDelay) // Should eventually give up
+                    }
+                } catch (_: OverlappingFileLockException) {
+                    logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
+                    Thread.sleep(retryDelay)
+                }
+            } while (lock == null)
+            segmentChangeQueue.put(ConsumerSegmentEvent(channel.size(), consumedSegmentOrder))
+        }
     }
 
     // Consumer lock block: returns `false` if end-of-fetch abnormality

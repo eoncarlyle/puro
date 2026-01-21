@@ -53,7 +53,7 @@ fun main() {
     No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
     deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
     the lawful judgment of his equals or by the law of the land."
-    """.trimIndent()
+    """.trimIndent().replace("\n", "")
 
     initialProducer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())))
 
@@ -68,7 +68,7 @@ fun main() {
     }
     consumer.run()
 
-    Thread.sleep(5000)
+    //Thread.sleep(1000)
     val secondValue = """
     All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
     or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
@@ -76,11 +76,11 @@ fun main() {
     merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
     property, until we or our chief justice have discovered how our own merchants are being treated in the country 
     at war with us. If our own merchants are safe they shall be safe too. 
-    """.trimIndent()
+    """.trimIndent().replace("\n", "")
 
     val thirdValue = """
     To no one will we sell, to no one deny or delay right or justice. 
-    """.trimIndent()
+    """.trimIndent().replace("\n", "")
 
     initialProducer.send(
         listOf(

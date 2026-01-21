@@ -1,5 +1,5 @@
 import org.slf4j.Logger
-import org.slf4j.LoggerFactory
+import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -28,7 +28,7 @@ class SignalBitProducer {
     private var currentSegmentOrder: Int
     private var offset: Int
     private val readBuffer: ByteBuffer
-    private val logger: Logger?
+    private val logger: Logger = NOPLogger.NOP_LOGGER
 
     companion object {
         // This should be configurable?
@@ -39,7 +39,7 @@ class SignalBitProducer {
         streamDirectory: Path,
         maximumWriteBatchSize: Int,
         readBufferSize: Int = 8192,
-        logger: Logger? = null
+        logger: Logger = NOPLogger.NOP_LOGGER
     ) {
         this.offset = 0
         this.streamDirectory = streamDirectory
@@ -47,7 +47,6 @@ class SignalBitProducer {
         this.readBufferSize = readBufferSize
         this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory)
         this.readBuffer = ByteBuffer.allocate(readBufferSize)
-        this.logger = logger
     }
 
     private fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -99,7 +98,7 @@ class SignalBitProducer {
                             Thread.sleep(retryDelay) // Should eventually give up
                         }
                     } catch (_: OverlappingFileLockException) {
-                        logger?.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
+                        logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
                         Thread.sleep(retryDelay)
                     }
                 } while (lock == null)
@@ -133,8 +132,7 @@ class SignalBitProducer {
             0, //lockStart,
             fileSizeOnceLockAcquired - lockStart,
             listOf(ControlTopic.BLOCK_END.value),
-            true,
-            null
+            true
         )
         readBuffer.flip()
 
@@ -164,8 +162,7 @@ class SignalBitProducer {
             0,
             BLOCK_START_RECORD_SIZE.toLong(),
             listOf(ControlTopic.BLOCK_START.value),
-            true,
-            null
+            true
         )
         readBuffer.flip()
 

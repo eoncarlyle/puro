@@ -1,4 +1,5 @@
 import org.slf4j.Logger
+import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
 import kotlin.experimental.and
 
@@ -75,7 +76,7 @@ fun getSignalBitRecords(
     finalOffset: Long,
     subscribedTopics: List<ByteArray>,
     isEndOfFetch: Boolean = false,
-    logger: Logger?
+    logger: Logger = NOPLogger.NOP_LOGGER
 ): GetSignalRecordsResult {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
@@ -313,7 +314,9 @@ fun getLargeSignalRecords(
         val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey, also allocation
 
         fragmentBuffer.put(initialOffset.toInt(), readBuffer, 0, (targetBytes - collectedBytes).toInt())
-        // Why on earth did the position not move
+        // Talk: Yikes
+        // "This method transfers length bytes into this buffer from the given source buffer, starting at the given
+        // offset in the source buffer and the given index in this buffer. The positions of both buffers are unchanged."
         return GetLargeSignalRecordResult.LargeRecordEnd(fragmentBuffer)
     } else {
         val fragmentBuffer = ByteBuffer.allocate((finalOffset - initialOffset).toInt()) // Saftey
@@ -328,6 +331,7 @@ fun buildProtoRecordAtIndex(index: Int, record: PuroRecord, protoRecords: Array<
     return recordLength
 }
 
+// TODO: See `createRecordBuffer` logic in test Utils
 fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
     val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
 
@@ -364,35 +368,6 @@ fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>, logger: Logge
         batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
             .put(encodedKeyLength).put(key).put(value)
     }
-    //TODO remove once debug is over
-    if (logger != null) {
-        protoRecords.forEach { record: SerialisedPuroRecord? ->
-            logger.info("[Producer] Internal message")
-            val printBuffer = ByteBuffer.allocate(startBlockRecordSize + blockBodySize + endBlockRecordSize)
-            val (messageCrc,
-                encodedSubrecordLength,
-                encodedTopicLength,
-                encodedTopic,
-                encodedKeyLength,
-                key,
-                value) = record!!
-
-            rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
-
-            printBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
-                .put(encodedKeyLength).put(key).put(value)
-            printBuffer.array().slice(0..<printBuffer.position()).also { logger.info(it.toString()) }
-
-            //logger.info("  CRC + next bit: ${record?.messageCrc}, ${record?.encodedSubrecordLength?.array()?.get(0)}")
-            //val m = record?.value?.array()
-            //if (m != null && m.size >= 3) {
-            //    logger.info("  Last 3 bits of value length of internal message ${m.slice(m.size - 3..<m.size)}")
-            //} else {
-            //    logger.info("  Short message")
-            //}
-        }
-    }
-
     return batchBuffer.rewind()
 }
 

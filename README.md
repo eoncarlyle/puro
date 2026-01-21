@@ -41,11 +41,13 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 ## Signal Bit Action Items
 
 - [x] Producer class, with runtime exception on integrity failure
-- [ ] Consumer class
-- [ ] Producer class segment cleanup/large reads
+- [x] Consumer class
+- [x] Consumer class large reads
+- [ ] Consumer class checking signal bits
 - [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
-- [ ] Producer segment retermination
+- [ ] Producer segment cleanup
 - [ ] Consumer handling segment cleanup deletion
+- [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
 - [ ] Producer active segment change handling
 - [ ] Handling messages larger than the read buffer
 
@@ -60,10 +62,12 @@ keyLength: varint
 key: byte[]
 value: byte[]
 ```
-
 - Subrecord length is the sum of the length of `topicLength`, `topic`, `keyLength`, `key`, and `value`
 - Total length is the sum of the length of `signal`, `crc`, and the number of bytes required to express
   `subrecordLength`
+
+- The value in the block start record the block signal bit
+- The value in the block end record is the 32-bit integer length of the sublock (number of bytes in the block except for the block end)
 
 ## Development Log
 
@@ -79,11 +83,37 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-21
+
+The tombstone record should act like a special case of a block end, and there is no reason to terminate with two 
+messages. If neither have a key and both have a topic of the same length then it's just a matter of adding that integer
+payload to the tombstone records.
+
+As far as handling segment deletion goes, the `segmentChangeQueue` is a good primitive but it can't be used to keep the
+segment up to date with deletions: the first event will not include subsequent deletes. But if all file events for every
+segment were stored in a traversable/accessible data structure that would fix things. Sure, it is annoying to have two
+possibly inconsistent data structures but A) if it is good enough for HFT firms it is good enough for me and B) seems
+straightforward enough. This should probably be an array of arrays rather than a hashtable because segment order will be
+the key.
+
+In case I'm looking for the producer debug fragment, it's in depr. Also, the 'SignalBit' naming scheme should go away 
+soon.
+
 ### 2026-01-20
 
+CLI tools for working with byte buffers
+
 ```shell
-$ dotnet fsi ~/code/puro/script.fsx
+$ dotnet fsi ~/code/puro/viewBytes.fsx
 ```
+
+Afirmations for working with a `ByteBuffer`
+
+I will remember to check if a buffer is rewound when things are acting strange
+I will remember to check if a buffer is rewound when things are acting strange
+I will remember to check if a buffer is rewound when things are acting strange
+I will remember to check if a buffer is rewound when things are acting strange
+I will remember to check if a buffer is rewound when things are acting strange
 
 ### 2026-01-19
 

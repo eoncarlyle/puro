@@ -22,3 +22,32 @@ private fun reterminateSegment() {
     }
 }
 
+/*
+if (logger != null) {
+    protoRecords.forEach { record: SerialisedPuroRecord? ->
+        logger.info("[Producer] Internal message")
+        val printBuffer = ByteBuffer.allocate(startBlockRecordSize + blockBodySize + endBlockRecordSize)
+        val (messageCrc,
+            encodedSubrecordLength,
+            encodedTopicLength,
+            encodedTopic,
+            encodedKeyLength,
+            key,
+            value) = record!!
+
+        rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
+
+        printBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
+            .put(encodedKeyLength).put(key).put(value)
+        printBuffer.array().slice(0..<printBuffer.position()).also { logger.info(it.toString()) }
+
+        logger.info("  CRC + next bit: ${record?.messageCrc}, ${record?.encodedSubrecordLength?.array()?.get(0)}")
+        val m = record?.value?.array()
+        if (m != null && m.size >= 3) {
+            logger.info("  Last 3 bits of value length of internal message ${m.slice(m.size - 3..<m.size)}")
+        } else {
+            logger.info("  Short message")
+        }
+    }
+}
+    */

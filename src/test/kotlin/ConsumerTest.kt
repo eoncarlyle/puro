@@ -1,4 +1,3 @@
-import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -8,7 +7,6 @@ import kotlin.test.assertTrue
 
 
 class ConsumerTest {
-    /*
     @Test
     fun `Happy Path getRecord`() {
         val expectedTopic = "country-codes".toByteArray()
@@ -28,6 +26,7 @@ class ConsumerTest {
         val buffer = createRecordBuffer(
             PuroRecord(expectedTopic, expectedKey, expectedValue)
         )
+
         val result = getRecord(buffer)
         assertTrue { result.isRight() }
 
@@ -59,7 +58,6 @@ class ConsumerTest {
             assertContentEquals(expectedValue.array(), actualValue.array())
         }
     }
-
 
     @Test
     fun `Large Message getRecord`() {
@@ -101,14 +99,23 @@ class ConsumerTest {
         recordBuffers.forEach { record -> consumerBuffer.put(record) }
         consumerBuffer.rewind()
 
-        val messageSize = 16L
-        val readSize = 32L
         //TODO Uncomment once logger is removed again
-        val records =
-            getRecords(consumerBuffer, messageSize, readSize, listOf("testTopic".toByteArray()), NOPLogger.NOP_LOGGER)
-        assertEquals(1, records.first.size)
-        assertEquals(readSize, records.second)
-        assertEquals(48, readSize + messageSize) //One remaining message
+        val getRecordsResult = getSignalBitRecords(
+            consumerBuffer,
+            0,
+            consumerBuffer.capacity().toLong(),
+            listOf("testTopic".toByteArray()),
+            true
+        )
+
+        assertTrue { getRecordsResult is GetSignalRecordsResult.Success }
+
+        when (getRecordsResult) {
+            is GetSignalRecordsResult.Success -> {
+                assertEquals(4, getRecordsResult.records.size)
+            }
+            else -> throw AssertionError("Incorrect record type")
+        }
     }
 
     @Test
@@ -124,121 +131,4 @@ class ConsumerTest {
         println(hardTransitionSubrecordLength(100))
         println(98.toVlqEncoding().capacity())
     }
-
-    @Test
-    fun `Get Record Truncation failure`() {
-        getRecords(
-            ByteBuffer.wrap(
-                byteArrayOf(
-                    -16,
-                    -121,
-                    4,
-                    9,
-                    116,
-                    101,
-                    115,
-                    116,
-                    84,
-                    111,
-                    112,
-                    105,
-                    99,
-                    4,
-                    107,
-                    101,
-                    121,
-                    49,
-                    118,
-                    97,
-                    108,
-                    117,
-                    101,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44,
-                    32,
-                    44
-                )
-            ), 0, 100, listOf("testTopic".toByteArray()), NOPLogger.NOP_LOGGER
-        )
-    }
-
-    // TODO: test
-    @Test
-    fun `Get Record Simple Failure`() {
-        getRecord(ByteBuffer.wrap(byteArrayOf(1)))
-    }
-     */
 }

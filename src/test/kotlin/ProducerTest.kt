@@ -6,7 +6,6 @@ import kotlin.io.path.Path
 import kotlin.test.assertEquals
 
 class ProducerTest {
-    /*
     @Test
     fun `Short message conversion`() {
         val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
@@ -46,8 +45,8 @@ class ProducerTest {
         val puroRecords = (0..<9).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
-        val producer = LegacyPuroProducer(Path("/tmp"), 3)
-        producer.sendBatched(puroRecords)  { buffer -> { _: FileChannel -> batchedBuffers.add(buffer) } }
+        val producer = SignalBitProducer(Path("/tmp"), 3)
+        producer.send(puroRecords)
         assertEquals(3, batchedBuffers.size)
     }
 
@@ -57,8 +56,8 @@ class ProducerTest {
         val puroRecords = (0..<10).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
-        val producer = LegacyPuroProducer(Path("/tmp"), 3)
-        producer.sendBatched(puroRecords)  { buffer -> { _: FileChannel -> batchedBuffers.add(buffer) } }
+        val producer = SignalBitProducer(Path("/tmp"), 3)
+        producer.send(puroRecords)
         assertEquals(4, batchedBuffers.size)
     }
 
@@ -68,5 +67,4 @@ class ProducerTest {
         assertEquals(TOMBSTONE_RECORD_LENGTH, createRecordBuffer(tombstoneRecord).capacity())
         assertContentEquals(TOMBSTONE_RECORD, createRecordBuffer(tombstoneRecord).array())
     }
-     */
 }
