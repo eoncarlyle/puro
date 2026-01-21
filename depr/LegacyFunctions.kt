@@ -51,3 +51,13 @@ if (logger != null) {
     }
 }
     */
+
+fun getTopicOnPossiblyTruncatedMessage(recordBuffer: ByteBuffer): ByteArray {
+    // TODO saftey
+    recordBuffer.position(1)
+    recordBuffer.fromVlq() //Discarding the length but advancing buffer
+    val (topicLength) = recordBuffer.fromVlq()
+    val (topic) = recordBuffer.getArraySlice(topicLength)
+    return topic
+}
+

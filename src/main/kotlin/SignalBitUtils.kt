@@ -88,7 +88,7 @@ fun getSignalBitRecords(
     while (readBuffer.hasRemaining()) {
         // Compare with getLargeRead
         val expectedCrc = readBuffer.get()
-        val lengthData = readBuffer.readSafety()?.fromVlq() //The readSaftey doesn't actually do anything
+        val lengthData = readBuffer.fromSafeVlq() //The readSaftey doesn't actually do anything
 
         if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second > readBuffer.capacity())) {
             if (offset == 0L) { //It is acceptable to start a read with a large message
@@ -106,7 +106,7 @@ fun getSignalBitRecords(
             }
         }
 
-        val topicLengthData = readBuffer.readSafety()?.fromVlq() //The readSaftey doesn't actually do anything
+        val topicLengthData = readBuffer.fromSafeVlq() //The readSaftey doesn't actually do anything
         val topicMetadata = if (topicLengthData != null) {
             readBuffer.getSafeArraySlice(topicLengthData.first)
         } else null
@@ -119,7 +119,7 @@ fun getSignalBitRecords(
                 continue
             }
         } else logger?.debug("${expectedCrc}, ${topicMetadata.first.decodeToString()}")
-        val keyMetadata = readBuffer.readSafety()?.fromVlq()
+        val keyMetadata = readBuffer.fromSafeVlq()
         val keyData = if (keyMetadata != null) {
             readBuffer.getSafeBufferSlice(keyMetadata.first)
         } else null

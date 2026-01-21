@@ -48,6 +48,28 @@ fun ByteBuffer.fromVlq(): Triple<Int, Int, Byte> {
     return Triple(result, byteCount, crc8)
 }
 
+fun ByteBuffer.fromSafeVlq(): Triple<Int, Int, Byte>? {
+    if (this.hasRemaining()) {
+        var currentByte = this.get()
+        var crc8 = crc8(currentByte)
+        var result = (currentByte and 0x7F).toInt()
+        var byteCount = 1
+
+        while ((currentByte and 0x80.toByte()) == 0x80.toByte()) {
+            if (!this.hasRemaining()) {
+                return null
+            }
+            currentByte = this.get()
+            result += ((currentByte and 0x7F).toInt() shl (byteCount * 7))
+            crc8 = crc8.withCrc8(currentByte)
+            byteCount++
+        }
+        return Triple(result, byteCount, crc8)
+    } else {
+        return null
+    }
+}
+
 fun ByteBuffer.readSafety() = if (this.hasRemaining()) { this } else null
 
 //! ByteBuffer state modification
