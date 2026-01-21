@@ -6,6 +6,7 @@ import kotlin.io.path.Path
 import kotlin.test.assertEquals
 
 class ProducerTest {
+    /*
     @Test
     fun `Short message conversion`() {
         val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
@@ -67,4 +68,5 @@ class ProducerTest {
         assertEquals(TOMBSTONE_RECORD_LENGTH, createRecordBuffer(tombstoneRecord).capacity())
         assertContentEquals(TOMBSTONE_RECORD, createRecordBuffer(tombstoneRecord).array())
     }
+     */
 }

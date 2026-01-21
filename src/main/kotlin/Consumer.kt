@@ -87,8 +87,9 @@ fun getTopicOnPossiblyTruncatedMessage(recordBuffer: ByteBuffer): ByteArray {
 fun isRelevantTopic(
     topic: ByteArray,
     subscribedTopics: List<ByteArray>,
-): Boolean = subscribedTopics.any { it.contentEquals(topic) } || ControlTopic.entries.toTypedArray()
-    .any { it.value.contentEquals(topic) }
+    includeControlTopics: Boolean,
+): Boolean = subscribedTopics.any { it.contentEquals(topic) } || (includeControlTopics && ControlTopic.entries.toTypedArray()
+    .any { it.value.contentEquals(topic) })
 
 fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
     //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
@@ -283,6 +284,7 @@ class PuroConsumer(
             when (it) {
                 is FetchSuccess.CleanFetch -> {
                     records.onMessages()
+                    logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
                 }
 
                 is FetchSuccess.CleanSegmentClosure -> {
@@ -498,7 +500,7 @@ class PuroConsumer(
 
                     currentConsumeState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
                     val offsetChange =
-                        getLargeSignalRecordsResult.byteBuffer.position()  //! assumes buffers not rewound
+                        getLargeSignalRecordsResult.byteBuffer.limit()  //! assumes buffers not rewound, also kinda annoying bug found here
                     logger.info("Large record offset change ${offsetChange}")
                     readOffset += offsetChange
 
@@ -534,6 +536,9 @@ class PuroConsumer(
     ): GetSignalRecordsAbnormality? {
         var abnormality = lastAbnormality
         if (getLargeSignalRecordsResult is GetLargeSignalRecordResult.LargeRecordEnd) {
+            val bytes = currentConsumeState.largeRecordFragments.map { it.array() }.reduce { acc, any -> acc + any }
+            logger.info("[Consumer] multibyte: ${bytes.joinToString { it.toString() }}")
+            logger.info("[Consumer] multibyte message: ${bytes.decodeToString()}")
             when (val deserialisedLargeRead = deserialiseLargeRead(currentConsumeState, subscribedTopics)) {
                 is DeserialiseLargeReadResult.Standard -> {
                     readRecords.add(deserialisedLargeRead.puroRecord)
@@ -575,7 +580,7 @@ class PuroConsumer(
                     if (lock == null) {
                         Thread.sleep(retryDelay) // Should eventually give up
                     }
-                } catch (e: OverlappingFileLockException) {
+                } catch (_: OverlappingFileLockException) {
                     logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
                     Thread.sleep(retryDelay)
                 }

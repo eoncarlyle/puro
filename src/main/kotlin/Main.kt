@@ -1,6 +1,8 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
+import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import org.slf4j.event.Level
 import java.nio.channels.FileChannel
 import java.nio.file.Path
 import kotlin.io.path.Path
@@ -44,8 +46,8 @@ fun directory() {
 fun main() {
     val logger = LoggerFactory.getLogger("MainKt")
 
-    Path("/tmp/puro/segment0.puro").deleteIfExists()
-    val initialProducer = SignalBitProducer(Path("/tmp/puro"), 10)
+    Path("/tmp/puro/stream0.puro").deleteIfExists()
+    val initialProducer = SignalBitProducer(Path("/tmp/puro"), 10, 100, logger)
 
     val firstValue = """
     No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
@@ -66,6 +68,7 @@ fun main() {
     }
     consumer.run()
 
+    Thread.sleep(5000)
     val secondValue = """
     All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
     or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 

@@ -1,7 +1,9 @@
 import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.experimental.and
@@ -26,6 +28,7 @@ class SignalBitProducer {
     private var currentSegmentOrder: Int
     private var offset: Int
     private val readBuffer: ByteBuffer
+    private val logger: Logger?
 
     companion object {
         // This should be configurable?
@@ -35,7 +38,8 @@ class SignalBitProducer {
     constructor(
         streamDirectory: Path,
         maximumWriteBatchSize: Int,
-        readBufferSize: Int = 8192
+        readBufferSize: Int = 8192,
+        logger: Logger? = null
     ) {
         this.offset = 0
         this.streamDirectory = streamDirectory
@@ -43,6 +47,7 @@ class SignalBitProducer {
         this.readBufferSize = readBufferSize
         this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory)
         this.readBuffer = ByteBuffer.allocate(readBufferSize)
+        this.logger = logger
     }
 
     private fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -56,7 +61,7 @@ class SignalBitProducer {
         for (step in 0..<stepCount) {
             val indices =
                 step * this.maximumWriteBatchSize..<min((step + 1) * this.maximumWriteBatchSize, puroRecords.size)
-            val batchedBuffer = createBatchedSignalRecordBuffer(puroRecords.slice(indices))
+            val batchedBuffer = createBatchedSignalRecordBuffer(puroRecords.slice(indices), logger)
             this.withProducerLock { channel ->
                 val initialPosition = channel.position()
                 channel.write(batchedBuffer)
@@ -79,18 +84,23 @@ class SignalBitProducer {
             .use { channel ->
                 val initialFileSize = channel.size()
 
-                var lock: FileLock?
+                var lock: FileLock? = null
 
                 val blockEndOffset = (initialFileSize - BLOCK_END_RECORD_SIZE + 1).coerceAtLeast(0)
 
                 do {
-                    lock = channel.tryLock(
-                        blockEndOffset,
-                        Long.MAX_VALUE - blockEndOffset,
-                        false
-                    )
-                    if (lock == null) {
-                        Thread.sleep(retryDelay) // Should eventually give up
+                    try {
+                        lock = channel.tryLock(
+                            blockEndOffset,
+                            Long.MAX_VALUE - blockEndOffset,
+                            false
+                        )
+                        if (lock == null) {
+                            Thread.sleep(retryDelay) // Should eventually give up
+                        }
+                    } catch (_: OverlappingFileLockException) {
+                        logger?.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
+                        Thread.sleep(retryDelay)
                     }
                 } while (lock == null)
 
@@ -105,8 +115,9 @@ class SignalBitProducer {
                 if (lockStart > 0) {
                     confirmLastBlockIntegrity(channel, lockStart, fileSizeOnceLockAcquired)
                 }
-
+                channel.position(fileSizeOnceLockAcquired)
                 block(channel)
+                logger?.info("Write")
             }
     }
 

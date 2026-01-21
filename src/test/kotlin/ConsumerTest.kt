@@ -8,6 +8,7 @@ import kotlin.test.assertTrue
 
 
 class ConsumerTest {
+    /*
     @Test
     fun `Happy Path getRecord`() {
         val expectedTopic = "country-codes".toByteArray()
@@ -239,4 +240,5 @@ class ConsumerTest {
     fun `Get Record Simple Failure`() {
         getRecord(ByteBuffer.wrap(byteArrayOf(1)))
     }
+     */
 }

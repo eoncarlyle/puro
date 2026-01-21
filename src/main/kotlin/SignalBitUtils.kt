@@ -111,9 +111,10 @@ fun getSignalBitRecords(
         } else null
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
-        if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics)) {
+        if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics, false)) {
             if (lengthData != null && (RECORD_CRC_BYTES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
                 offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
+                readBuffer.position(offset.toInt())
                 continue
             }
         } else logger?.debug("${expectedCrc}, ${topicMetadata.first.decodeToString()}")
@@ -255,7 +256,7 @@ fun deserialiseLargeRead(
         fragmentIndex = it.third
     }
 
-    if (!isRelevantTopic(topicMetadata.first, subscribedTopics)) {
+    if (!isRelevantTopic(topicMetadata.first, subscribedTopics, false)) {
         return DeserialiseLargeReadResult.IrrelevantTopic
     }
 
@@ -309,9 +310,10 @@ fun getLargeSignalRecords(
     if (targetBytes < collectedBytes) throw IllegalArgumentException("Has collected more than the target bytes")
 
     if (finalOffset - initialOffset >= targetBytes - collectedBytes) {
-        val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey
+        val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey, also allocation
 
         fragmentBuffer.put(initialOffset.toInt(), readBuffer, 0, (targetBytes - collectedBytes).toInt())
+        // Why on earth did the position not move
         return GetLargeSignalRecordResult.LargeRecordEnd(fragmentBuffer)
     } else {
         val fragmentBuffer = ByteBuffer.allocate((finalOffset - initialOffset).toInt()) // Saftey
@@ -326,7 +328,7 @@ fun buildProtoRecordAtIndex(index: Int, record: PuroRecord, protoRecords: Array<
     return recordLength
 }
 
-fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
+fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
     val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
 
     val blockBodySize =// need to shift over 1 for starting record
@@ -361,6 +363,34 @@ fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>): ByteBuffer {
 
         batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
             .put(encodedKeyLength).put(key).put(value)
+    }
+    //TODO remove once debug is over
+    if (logger != null) {
+        protoRecords.forEach { record: SerialisedPuroRecord? ->
+            logger.info("[Producer] Internal message")
+            val printBuffer = ByteBuffer.allocate(startBlockRecordSize + blockBodySize + endBlockRecordSize)
+            val (messageCrc,
+                encodedSubrecordLength,
+                encodedTopicLength,
+                encodedTopic,
+                encodedKeyLength,
+                key,
+                value) = record!!
+
+            rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
+
+            printBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
+                .put(encodedKeyLength).put(key).put(value)
+            printBuffer.array().slice(0..<printBuffer.position()).also { logger.info(it.toString()) }
+
+            //logger.info("  CRC + next bit: ${record?.messageCrc}, ${record?.encodedSubrecordLength?.array()?.get(0)}")
+            //val m = record?.value?.array()
+            //if (m != null && m.size >= 3) {
+            //    logger.info("  Last 3 bits of value length of internal message ${m.slice(m.size - 3..<m.size)}")
+            //} else {
+            //    logger.info("  Short message")
+            //}
+        }
     }
 
     return batchBuffer.rewind()

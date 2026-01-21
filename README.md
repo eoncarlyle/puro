@@ -79,6 +79,12 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-20
+
+```shell
+$ dotnet fsi ~/code/puro/script.fsx
+```
+
 ### 2026-01-19
 
 re: `ba59e9b` The way that large reads work is counter to the idea of using steps in `standardRead`. The result was
@@ -116,6 +122,8 @@ it really matters all that much.
 Sublock size = length of entire block except the end block message
 
 Removed the legacy producer in this build
+
+
 
 ### 2026-01-10
 
