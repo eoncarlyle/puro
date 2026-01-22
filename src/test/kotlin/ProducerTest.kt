@@ -45,6 +45,7 @@ class ProducerTest {
         val puroRecords = (0..<9).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
+        //TODO: temp directory
         val producer = SignalBitProducer(Path("/tmp"), 3)
         producer.send(puroRecords)
         assertEquals(3, batchedBuffers.size)
@@ -56,6 +57,7 @@ class ProducerTest {
         val puroRecords = (0..<10).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
         val batchedBuffers = ArrayList<ByteBuffer>()
+        //TODO: temp directory
         val producer = SignalBitProducer(Path("/tmp"), 3)
         producer.send(puroRecords)
         assertEquals(4, batchedBuffers.size)

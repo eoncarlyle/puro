@@ -1,5 +1,10 @@
+import org.slf4j.Logger
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.time.Duration
 import kotlin.io.path.exists
 import kotlin.use
 
@@ -13,6 +18,8 @@ data class ConsumerSegmentEvent(
 
 fun getSegmentName(path: Path) =
     path.fileName.toString().substringAfter(SEGMENT_PREFIX).substringBefore(".$FILE_EXTENSION").toIntOrNull() ?: -1
+
+fun isSegment(path: Path) = path.fileName.toString().startsWith(SEGMENT_PREFIX)
 
 fun getSegmentOrder(path: Path) =
     path.fileName.toString().substringAfter(SEGMENT_PREFIX).substringBefore(".$FILE_EXTENSION").toIntOrNull() ?: -1
@@ -41,12 +48,34 @@ fun getActiveSegment(streamDirectory: Path, asProducer: Boolean = false): Path {
     }
 }
 
-fun getHighestSegmentOrder(streamDirectory: Path): Int {
+fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryDelay: Duration, logger: Logger): Int {
     if (!streamDirectory.exists()) {
         throw RuntimeException("Stream directory $streamDirectory does not exist")
     }
-    return Files.list(streamDirectory).use { paths -> paths.map { getSegmentOrder(it) }.min { a, b -> a - b } }
-        .orElse(-1)
+    return Files.list(streamDirectory)
+        .sorted { a, b -> getSegmentOrder(a) - getSegmentOrder(b) }
+        .filter { a -> isSegment(a) }
+        .filter { path ->
+            return@filter FileChannel.open(path, StandardOpenOption.READ).use { channel ->
+                withFileLockDimensions(channel, retryDelay, logger) { lockStart, _ ->
+                    return@withFileLockDimensions if (lockStart > 0) {
+                        readBuffer.clear()
+                        val record = getMaybeSignalRecord(
+                            channel,
+                            readBuffer,
+                            lockStart,
+                            lockStart + BLOCK_START_RECORD_SIZE + 1
+                        )
+                        readBuffer.clear()
+                        record is GetSignalRecordsResult.Success && ControlTopic.BLOCK_START.equals(record.records.first().topic)
+                    } else {
+                        false
+                    }
+                }
+            }
+        }
+        .map { getSegmentOrder(it) }
+        .findFirst().orElse(-1)
 }
 
 fun getLowestSegmentOrder(streamDirectory: Path): Int {

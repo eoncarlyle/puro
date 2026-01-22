@@ -166,7 +166,7 @@ class PuroConsumer(
             }
 
             is ConsumerStartPoint.Latest -> {
-                consumedSegmentOrder = getHighestSegmentOrder(streamDirectory)
+                consumedSegmentOrder = getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
                 val path = getSegmentPath(streamDirectory, consumedSegmentOrder)
                 path
                     ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")

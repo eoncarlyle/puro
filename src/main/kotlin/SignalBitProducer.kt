@@ -3,7 +3,6 @@ import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
-import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.experimental.and
@@ -45,8 +44,8 @@ class SignalBitProducer {
         this.streamDirectory = streamDirectory
         this.maximumWriteBatchSize = maximumWriteBatchSize
         this.readBufferSize = readBufferSize
-        this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory)
         this.readBuffer = ByteBuffer.allocate(readBufferSize)
+        this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
     }
 
     private fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -78,45 +77,16 @@ class SignalBitProducer {
     }
 
     private fun withProducerLock(block: (FileChannel) -> Unit) {
-
         FileChannel.open(getActiveSegment(streamDirectory, true), StandardOpenOption.WRITE, StandardOpenOption.READ)
             .use { channel ->
-                val initialFileSize = channel.size()
-
-                var lock: FileLock? = null
-
-                val blockEndOffset = (initialFileSize - BLOCK_END_RECORD_SIZE + 1).coerceAtLeast(0)
-
-                do {
-                    try {
-                        lock = channel.tryLock(
-                            blockEndOffset,
-                            Long.MAX_VALUE - blockEndOffset,
-                            false
-                        )
-                        if (lock == null) {
-                            Thread.sleep(retryDelay) // Should eventually give up
-                        }
-                    } catch (_: OverlappingFileLockException) {
-                        logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
-                        Thread.sleep(retryDelay)
+                withFileLockDimensions(channel, retryDelay, logger) { lockStart, fileSizeOnceLockAcquired ->
+                    if (lockStart > 0) {
+                        confirmLastBlockIntegrity(channel, lockStart, fileSizeOnceLockAcquired)
                     }
-                } while (lock == null)
-
-                val fileSizeOnceLockAcquired = channel.size()
-
-                val lockStart = if (fileSizeOnceLockAcquired >= BLOCK_END_RECORD_SIZE) {
-                    fileSizeOnceLockAcquired - BLOCK_END_RECORD_SIZE + 1
-                } else {
-                    0L
+                    channel.position(fileSizeOnceLockAcquired)
+                    block(channel)
+                    logger.info("Write")
                 }
-
-                if (lockStart > 0) {
-                    confirmLastBlockIntegrity(channel, lockStart, fileSizeOnceLockAcquired)
-                }
-                channel.position(fileSizeOnceLockAcquired)
-                block(channel)
-                logger?.info("Write")
             }
     }
 
@@ -141,13 +111,11 @@ class SignalBitProducer {
                 if (maybeBlockEndRecord.records.size == 1) {
                     maybeBlockEndRecord.records.first
                 } else throw NotImplementedError("Segment cleanup not implemented")
-            }
-
+            } //TODO segment tombstoning
             else -> throw NotImplementedError("Segment cleanup not implemented")
         }
 
         val subBlockSize = blockEndRecord.value.getInt()
-
         var readLock: FileLock?
         do {
             readLock = channel.tryLock(lockStart - subBlockSize, BLOCK_START_RECORD_SIZE.toLong(), true)

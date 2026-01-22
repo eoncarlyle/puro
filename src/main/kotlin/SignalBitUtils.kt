@@ -1,6 +1,10 @@
 import org.slf4j.Logger
 import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
+import java.time.Duration
 import kotlin.experimental.and
 
 // This is for common utilities between consumers and producers for signal bit
@@ -410,4 +414,61 @@ fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
         key,
         value
     ) to recordLength
+}
+
+// Dimensions are lockStart * fileSizeOnceLockAcquired
+fun <T> withFileLockDimensions(
+    channel: FileChannel,
+    retryDelay: Duration,
+    logger: Logger,
+    dimensionConsumer: (Long, Long) -> T
+): T {
+    val initialFileSize = channel.size()
+    var lock: FileLock? = null
+    val blockEndOffset = (initialFileSize - BLOCK_END_RECORD_SIZE + 1).coerceAtLeast(0)
+
+    do {
+        try {
+            lock = channel.tryLock(
+                blockEndOffset,
+                Long.MAX_VALUE - blockEndOffset,
+                false
+            )
+            if (lock == null) {
+                Thread.sleep(retryDelay) // Should eventually give up
+            }
+        } catch (_: OverlappingFileLockException) {
+            logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
+            Thread.sleep(retryDelay)
+        }
+    } while (lock == null)
+
+    val fileSizeOnceLockAcquired = channel.size()
+    val lockStart = if (fileSizeOnceLockAcquired >= BLOCK_END_RECORD_SIZE) {
+        fileSizeOnceLockAcquired - BLOCK_END_RECORD_SIZE + 1
+    } else {
+        0L
+    }
+
+    return dimensionConsumer(lockStart, fileSizeOnceLockAcquired)
+}
+
+fun getMaybeSignalRecord(
+    channel: FileChannel,
+    readBuffer: ByteBuffer,
+    lockStart: Long,
+    lockEnd: Long
+): GetSignalRecordsResult {
+    readBuffer.clear()
+    channel.read(readBuffer, lockStart)
+    val maybeBlockEndRecord = getSignalBitRecords(
+        readBuffer,
+        0, //lockStart,
+        lockEnd - lockStart,
+        listOf(ControlTopic.BLOCK_START.value, ControlTopic.BLOCK_END.value, ControlTopic.SEGMENT_TOMBSTONE.value),
+        true
+    )
+    readBuffer.flip()
+
+    return maybeBlockEndRecord
 }
