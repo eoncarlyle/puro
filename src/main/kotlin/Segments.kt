@@ -67,7 +67,7 @@ fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryD
                             lockStart + BLOCK_START_RECORD_SIZE + 1
                         )
                         readBuffer.clear()
-                        record is GetSignalRecordsResult.Success && ControlTopic.BLOCK_START.equals(record.records.first().topic)
+                        record is GetSignalRecordsResult.Success && ControlTopic.BLOCK_END.equals(record.records.first().topic)
                     } else {
                         false
                     }
