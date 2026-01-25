@@ -83,6 +83,16 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-22
+
+I am more or less assuming that te consumer can't be working on a large message (without yet finishing it) and then be 
+hit by a block start segment, because I think the segment is truly unrecoverable at that point.
+
+Notable comment, and also the program currently can't handle small messages intermixed with big ones, must fix
+ //TODO I recall needing to exclude control segments from the `isRelevantTopic` call, but I
+ //don't remember why. This is where I want to do the signal bit check.
+            
+
 ### 2026-01-21
 
 The tombstone record should act like a special case of a block end, and there is no reason to terminate with two 

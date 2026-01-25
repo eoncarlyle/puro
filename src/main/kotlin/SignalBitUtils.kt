@@ -14,6 +14,7 @@ sealed class GetSignalRecordsAbnormality {
     data object Truncation : GetSignalRecordsAbnormality()
     data object RecordsAfterTombstone : GetSignalRecordsAbnormality()
     data object StandardTombstone : GetSignalRecordsAbnormality()
+    data object LowSignalBit : GetSignalRecordsAbnormality()
 }
 
 
@@ -122,7 +123,7 @@ fun getSignalBitRecords(
                 readBuffer.position(offset.toInt())
                 continue
             }
-        } else logger?.debug("${expectedCrc}, ${topicMetadata.first.decodeToString()}")
+        } else logger.debug("${expectedCrc}, ${topicMetadata.first.decodeToString()}")
         val keyMetadata = readBuffer.fromSafeVlq()
         val keyData = if (keyMetadata != null) {
             readBuffer.getSafeBufferSlice(keyMetadata.first)
@@ -156,6 +157,10 @@ fun getSignalBitRecords(
                 }
                 return GetSignalRecordsResult.StandardAbnormality(records, offset, abnormality)
             }
+            //else if (ControlTopic.BLOCK_START.value.contentEquals(topic)) {
+            //    //TODO I recall needing to exclude control segments from the `isRelevantTopic` call, but I
+            //    //don't remember why. This is where I want to do the signal bit check.
+            //}
             offset += totalLength
         } else {
             truncationAbnormality = true

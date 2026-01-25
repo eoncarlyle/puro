@@ -85,7 +85,8 @@ fun main() {
     initialProducer.send(
         listOf(
             PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
-            PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer())
+            PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
         )
     )
 }

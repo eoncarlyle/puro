@@ -85,7 +85,6 @@ class SignalBitProducer {
                     }
                     channel.position(fileSizeOnceLockAcquired)
                     block(channel)
-                    logger.info("Write")
                 }
             }
     }

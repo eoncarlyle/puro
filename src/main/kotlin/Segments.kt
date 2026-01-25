@@ -64,7 +64,7 @@ fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryD
                             channel,
                             readBuffer,
                             lockStart,
-                            lockStart + BLOCK_START_RECORD_SIZE + 1
+                            lockStart + BLOCK_END_RECORD_SIZE + 1
                         )
                         readBuffer.clear()
                         record is GetSignalRecordsResult.Success && ControlTopic.BLOCK_END.equals(record.records.first().topic)

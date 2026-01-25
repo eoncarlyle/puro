@@ -23,12 +23,6 @@ sealed class ConsumerError {
     data object HardTransitionFailure : ConsumerError()
 }
 
-sealed class GetRecordAbnormality {
-    data object Truncation : GetRecordAbnormality()
-    data object RecordsAfterTombstone : GetRecordAbnormality()
-    data object StandardTombstone : GetRecordAbnormality()
-}
-
 private sealed class ReadTombstoneStatus {
     data object NotTombstoned : ReadTombstoneStatus()
     data object RecordsAfterTombstone : ReadTombstoneStatus()
@@ -39,18 +33,13 @@ private data class StandardRead(
     val finalConsumerOffset: Long,
     val fetchedRecords: ArrayList<PuroRecord>,
     val abnormalOffsetWindow: Pair<Long, Long>?,
-    val recordsAfterTombstone: ReadTombstoneStatus,
+    val abnormality: GetSignalRecordsAbnormality?
 )
 
 private sealed class FetchSuccess() {
     data object CleanFetch : FetchSuccess()
     data object CleanSegmentClosure : FetchSuccess()
     data object RecordsAfterTombstone : FetchSuccess()
-    class HardTransition(
-        val abnormalOffsetWindowStart: Long,
-        val abnormalOffsetWindowStop: Long,
-        val recordsAfterTombstone: Boolean
-    ) : FetchSuccess()
 }
 
 typealias ConsumerResult<R> = Either<ConsumerError, R>
@@ -82,20 +71,6 @@ fun isRelevantTopic(
 ): Boolean =
     subscribedTopics.any { it.contentEquals(topic) } || (includeControlTopics && ControlTopic.entries.toTypedArray()
         .any { it.value.contentEquals(topic) })
-
-fun hardTransitionSubrecordLength(subrecordLengthMetaLengthSum: Int): Int {
-    //messageSize = 1 + capacity(vlq(subrecordLength)) + subrecordLength
-    var subrecordLength = subrecordLengthMetaLengthSum - 1
-
-    while (subrecordLengthMetaLengthSum != RECORD_CRC_BYTES + ceilingDivision(
-            Int.SIZE_BITS - subrecordLength.countLeadingZeroBits(),
-            7
-        ) + subrecordLength
-    ) {
-        subrecordLength--
-    }
-    return subrecordLength
-}
 
 class PuroConsumer(
     val streamDirectory: Path,
@@ -258,7 +233,6 @@ class PuroConsumer(
     }
 
     private fun ArrayList<PuroRecord>.onMessages() {
-        //this.filter { r -> subscribedTopics.any { it.contentEquals(r.topic) } } //Already filtered
         this.forEach { r -> onMessage(r, logger) }
     }
 
@@ -269,31 +243,21 @@ class PuroConsumer(
             logger.warn("Consumer received out-of-date producer offset $producerOffset while at consumer offset $consumerOffset")
         }
 
-        // TODO: if the lambda is broken out it will be much easier to test
         val fetchResult = withConsumerLock(consumerOffset, producerOffset - consumerOffset) { fileChannel ->
             fetch(fileChannel, records, producerOffset)
         }
 
         fetchResult.onRight {
             when (it) {
-                is FetchSuccess.CleanFetch -> {
-                    records.onMessages()
+                null, is GetSignalRecordsAbnormality.Truncation -> records.onMessages()
                     //logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
-                }
 
-                is FetchSuccess.CleanSegmentClosure -> {
+                is GetSignalRecordsAbnormality.StandardTombstone, GetSignalRecordsAbnormality.RecordsAfterTombstone -> {
                     currentConsumerLocked = true
                     records.onMessages()
                 }
-
-                is FetchSuccess.RecordsAfterTombstone -> {
-                    currentConsumerLocked = true
-                    records.onMessages()
-                }
-
-                is FetchSuccess.HardTransition -> {
-                    records.onMessages()
-                }
+                // The `consumedSegmentOrder` _really_ should not have changed between these two points
+                is GetSignalRecordsAbnormality.LowSignalBit -> segmentChangeQueue.put(ConsumerSegmentEvent(producerOffset, consumedSegmentOrder))
             }
         }.onLeft {
             //TODO an actually acceptable logging message
@@ -301,12 +265,12 @@ class PuroConsumer(
         }
     }
 
-    private fun happyPathFetch(
+    private fun standardFetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
         producerOffset: Long
-    ): ConsumerResult<FetchSuccess> {
-        val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
+    ): ConsumerResult<GetSignalRecordsAbnormality?> {
+        val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, abnormality) = standardRead(
             fileChannel,
             consumerOffset,
             producerOffset,
@@ -314,22 +278,17 @@ class PuroConsumer(
         records.addAll(fetchedRecords)
         consumerOffset = finalConsumerOffset
         abnormalOffsetWindow = readAbnormalOffsetWindow
-        currentConsumerLocked = readTombstoneStatus != ReadTombstoneStatus.NotTombstoned
 
-        return if (readTombstoneStatus != ReadTombstoneStatus.RecordsAfterTombstone) {
-            right(FetchSuccess.CleanFetch)
-        } else {
-            right(FetchSuccess.RecordsAfterTombstone)
-        }
+        return right(abnormality)
     }
 
     private fun fetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
         producerOffset: Long
-    ): ConsumerResult<FetchSuccess> {
+    ): ConsumerResult<GetSignalRecordsAbnormality?> {
         if (abnormalOffsetWindow == null) {
-            return happyPathFetch(fileChannel, records, producerOffset)
+            return standardFetch(fileChannel, records, producerOffset)
         } else {
             readBuffer.clear()
             fileChannel.read(readBuffer)
@@ -341,57 +300,17 @@ class PuroConsumer(
                 ifRight = { result ->
                     consumerOffset += result.second
                     abnormalOffsetWindow = null
-                    return happyPathFetch(fileChannel, records, producerOffset)
+                    return standardFetch(fileChannel, records, producerOffset)
                 },
                 ifLeft = {
-                    // TODO This will not work with signal bits, but keeping this here for now
-                    // Hard producer transition: last producer failed, but new messages not interrupted
-                    readBuffer.rewind()
-                    // Off-by-one possibility
-                    // TODO buffer safety: integer conversions may be an issue
-                    val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
-                    readBuffer.position(bufferOffset + 1)
-
-                    getRecord(readBuffer)
-                        .fold(
-                            ifLeft = {
-                                Either.Left<ConsumerError, FetchSuccess>(ConsumerError.HardTransitionFailure)
-                            },
-                            ifRight = { hardProducerTransitionResult ->
-                                consumerOffset += hardProducerTransitionResult.second
-
-                                val originalAbnormalOffsetWindow =
-                                    Pair(abnormalOffsetWindow!!.first, abnormalOffsetWindow!!.second)
-
-                                val (finalConsumerOffset, fetchedRecords, subsequentAbnormalOffsetWindow, readTombstoneStatus) = standardRead(
-                                    fileChannel,
-                                    consumerOffset,
-                                    producerOffset
-                                )
-                                records.addAll(fetchedRecords)
-                                consumerOffset = finalConsumerOffset
-                                abnormalOffsetWindow = subsequentAbnormalOffsetWindow
-
-                                // It is of course possible that there are back-to-back hard transition failures,
-                                // and this is reflected in the `originalAbnormalOffsetWindow` vs. `subsequentAbnormalOffsetWindow`
-                                val result = FetchSuccess.HardTransition(
-                                    originalAbnormalOffsetWindow.first,
-                                    originalAbnormalOffsetWindow.second,
-                                    readTombstoneStatus != ReadTombstoneStatus.RecordsAfterTombstone
-                                )
-                                right(result)
-                            }
-                        )
+                    //readBuffer.rewind()
+                    //val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
+                    //readBuffer.position(bufferOffset + 1)
+                    Either.Left<ConsumerError, GetSignalRecordsAbnormality?>(ConsumerError.HardTransitionFailure)
                 }
             )
         }
     }
-
-    private fun getStepCount(offsetDelta: Long) = (if (offsetDelta % readBufferSize == 0L) {
-        (offsetDelta / readBufferSize)
-    } else {
-        (offsetDelta / readBufferSize) + 1
-    }).toInt()
 
     private fun standardRead(
         fileChannel: FileChannel,
@@ -403,12 +322,9 @@ class PuroConsumer(
         var readOffset = startingReadOffset
         logger.info("Starting read offset $readOffset")
 
-        val steps = getStepCount(producerOffset - readOffset)
-
         val readRecords = ArrayList<PuroRecord>()
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
-
-        var lastAbnormality: GetSignalRecordsAbnormality? = null
+        var abnormality: GetSignalRecordsAbnormality? = null
         var isLastBatch = false
         var isPossibleLastBatch: Boolean
 
@@ -424,7 +340,6 @@ class PuroConsumer(
             fileChannel.read(readBuffer)
             readBuffer.flip()
 
-            //val (batchRecords, offsetChange, abnormality) = getSignalBitRecords(
             when (consumeState) {
                 is ConsumeState.Standard -> {
                     val getSignalRecordsResult = getSignalBitRecords(
@@ -448,13 +363,13 @@ class PuroConsumer(
                         }
 
                         is GetSignalRecordsResult.StandardAbnormality -> {
-                            lastAbnormality = getSignalRecordsResult.abnormality
+                            abnormality = getSignalRecordsResult.abnormality
                             readRecords.addAll(getSignalRecordsResult.records)
                             // Talk as of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
-                            if (isPossibleLastBatch && lastAbnormality == GetSignalRecordsAbnormality.Truncation) {
+                            if (isPossibleLastBatch && abnormality == GetSignalRecordsAbnormality.Truncation) {
                                 readAbnormalOffsetWindow = consumerOffset to producerOffset
-                            } else if (lastAbnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
-                                lastAbnormality == GetSignalRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
+                            } else if (abnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
+                                abnormality == GetSignalRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
                             ) {
                                 break
                             }
@@ -496,11 +411,11 @@ class PuroConsumer(
                     logger.info("Large record offset change ${offsetChange}")
                     readOffset += offsetChange
 
-                    lastAbnormality = deserialiseLargeReadWithAbnormalityTracking(
+                    abnormality = deserialiseLargeReadWithAbnormalityTracking(
                         getLargeSignalRecordsResult,
                         currentConsumeState,
                         readRecords,
-                        lastAbnormality
+                        abnormality
                     )
                 }
             }
@@ -512,11 +427,7 @@ class PuroConsumer(
             readOffset,
             readRecords,
             readAbnormalOffsetWindow,
-            when (lastAbnormality) {
-                is GetSignalRecordsAbnormality.StandardTombstone -> ReadTombstoneStatus.StandardTombstone
-                is GetSignalRecordsAbnormality.RecordsAfterTombstone -> ReadTombstoneStatus.RecordsAfterTombstone
-                else -> ReadTombstoneStatus.NotTombstoned
-            }
+            abnormality
         )
     }
 
@@ -562,7 +473,8 @@ class PuroConsumer(
         return segment
     }
 
-    //The directory watcher isn't super great at
+    //The directory watcher sometimes doesn't catch events right after the consumer is created
+    //Duplicate `segmentChangeQueue` events are harmless
     private fun catchupThread() = Thread {
         Thread.sleep(100)
         getConsumedSegmentChannel().use { channel ->
