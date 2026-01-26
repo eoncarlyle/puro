@@ -28,6 +28,7 @@ class SignalBitProducer {
     private var offset: Int
     private val readBuffer: ByteBuffer
     private val logger: Logger = NOPLogger.NOP_LOGGER
+    var times = 0;
 
     companion object {
         // This should be configurable?
@@ -71,6 +72,8 @@ class SignalBitProducer {
                 ).toSerialised()
 
                 channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
+                times++
+                if (times == 2) { throw RuntimeException() }
                 channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 1)
             }
         }

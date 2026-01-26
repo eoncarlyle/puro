@@ -359,7 +359,7 @@ class PuroConsumer(
                     when (getSignalRecordsResult) {
                         is GetSignalRecordsResult.Success -> {
                             readRecords.addAll(getSignalRecordsResult.records)
-                            logger.info("Offset change ${getSignalRecordsResult.offset}")
+                            logger.info("Standard offset change ${getSignalRecordsResult.offset}")
                             readOffset += getSignalRecordsResult.offset
                         }
 
