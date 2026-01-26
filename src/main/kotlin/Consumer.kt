@@ -9,6 +9,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
+import kotlin.math.log
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
@@ -408,8 +409,8 @@ class PuroConsumer(
                     currentConsumeState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
                     val offsetChange =
                         getLargeSignalRecordsResult.byteBuffer.limit()  //Talk: assumes buffers not rewound, also kinda annoying bug found here
-                    logger.info("Large record offset change ${offsetChange}")
                     readOffset += offsetChange
+                    logger.info("Large record offset change ${offsetChange} to ${readOffset}")
 
                     abnormality = deserialiseLargeReadWithAbnormalityTracking(
                         getLargeSignalRecordsResult,
@@ -439,7 +440,7 @@ class PuroConsumer(
     ): GetSignalRecordsAbnormality? {
         var abnormality = lastAbnormality
         if (getLargeSignalRecordsResult is GetLargeSignalRecordResult.LargeRecordEnd) {
-            val bytes = currentConsumeState.largeRecordFragments.map { it.array() }.reduce { acc, any -> acc + any }
+            //val bytes = currentConsumeState.largeRecordFragments.map { it.array() }.reduce { acc, any -> acc + any }
             //logger.info("[Consumer] multibyte: ${bytes.joinToString { it.toString() }}")
             //logger.info("[Consumer] multibyte message: ${bytes.decodeToString()}")
             when (val deserialisedLargeRead = deserialiseLargeRead(currentConsumeState, subscribedTopics)) {

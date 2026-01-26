@@ -83,6 +83,23 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-25
+
+A truncation abnormality _can_ take place if it isn't the end of fetch if a large message truncates a small message
+
+```kotlin
+    return when {
+        isEndOfFetch && truncationAbnormality -> GetSignalRecordsResult.StandardAbnormality(
+            records,
+            offset,
+            GetSignalRecordsAbnormality.Truncation
+        )
+
+        truncationAbnormality -> throw IllegalStateException("This should never happen")
+        else -> GetSignalRecordsResult.Success(records, offset)
+    }
+```
+
 ### 2026-01-22
 
 I am more or less assuming that te consumer can't be working on a large message (without yet finishing it) and then be 

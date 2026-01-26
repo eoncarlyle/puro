@@ -167,15 +167,14 @@ fun getSignalBitRecords(
         }
     }
 
-    return when {
-        isEndOfFetch && truncationAbnormality -> GetSignalRecordsResult.StandardAbnormality(
+    return if (truncationAbnormality) {
+        GetSignalRecordsResult.StandardAbnormality(
             records,
             offset,
             GetSignalRecordsAbnormality.Truncation
         )
-
-        truncationAbnormality -> throw IllegalStateException("This should never happen")
-        else -> GetSignalRecordsResult.Success(records, offset)
+    } else {
+        GetSignalRecordsResult.Success(records, offset)
     }
 }
 
