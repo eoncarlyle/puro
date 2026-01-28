@@ -83,6 +83,10 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-27
+
+`SignalBitUtils` line 122 and `SignalBitProducer` line 76 are the starting places
+
 ### 2026-01-25
 
 A truncation abnormality _can_ take place if it isn't the end of fetch if a large message truncates a small message

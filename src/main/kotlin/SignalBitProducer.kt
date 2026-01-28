@@ -71,9 +71,11 @@ class SignalBitProducer {
                     )
                 ).toSerialised()
 
-                channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
                 times++
-                if (times == 2) { throw RuntimeException() }
+                if (times == 2) {
+                    throw RuntimeException()
+                }
+                channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
                 channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 1)
             }
         }

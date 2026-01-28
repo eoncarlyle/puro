@@ -118,6 +118,10 @@ fun getSignalBitRecords(
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
         if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics, false)) {
+            if (ControlTopic.BLOCK_START.value.contentEquals(topicMetadata?.first)) {
+                println()
+            }
+
             if (lengthData != null && (RECORD_CRC_BYTES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
                 offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
                 readBuffer.position(offset.toInt())
