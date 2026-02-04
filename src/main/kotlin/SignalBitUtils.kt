@@ -117,10 +117,7 @@ fun getSignalBitRecords(
         } else null
 
         //TODO: Subject this to microbenchmarks, not sure if this actually matters
-        if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics, false)) {
-            if (ControlTopic.BLOCK_START.value.contentEquals(topicMetadata?.first)) {
-                println()
-            }
+        if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics, listOf(ControlTopic.BLOCK_START))) {
 
             if (lengthData != null && (RECORD_CRC_BYTES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
                 offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
@@ -136,6 +133,10 @@ fun getSignalBitRecords(
         val valueData = if (lengthData != null && topicLengthData != null && keyMetadata != null) {
             readBuffer.getSafeBufferSlice(lengthData.first - topicLengthData.second - topicLengthData.first - keyMetadata.second - keyMetadata.first)
         } else null
+
+        if (topicMetadata?.first?.contentEquals(ControlTopic.BLOCK_START.value) == true && valueData?.first?.array()?.first() == 0.toByte())  {
+            return GetSignalRecordsResult.StandardAbnormality(records, initialOffset, GetSignalRecordsAbnormality.LowSignalBit)
+        }
 
         // Note: The else branch isn't advancing the offset because it is possible that this is the next batch
         // TODO: while the reasoning above is sound, but we now have a baked in assumption that the only time
@@ -262,7 +263,7 @@ fun deserialiseLargeRead(
         fragmentIndex = it.third
     }
 
-    if (!isRelevantTopic(topicMetadata.first, subscribedTopics, false)) {
+    if (!isRelevantTopic(topicMetadata.first, subscribedTopics, listOf())) {
         return DeserialiseLargeReadResult.IrrelevantTopic
     }
 

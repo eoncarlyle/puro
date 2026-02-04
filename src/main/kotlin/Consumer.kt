@@ -68,10 +68,9 @@ fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
 fun isRelevantTopic(
     topic: ByteArray,
     subscribedTopics: List<ByteArray>,
-    includeControlTopics: Boolean,
+    otherIncludedTopics: List<ControlTopic>,
 ): Boolean =
-    subscribedTopics.any { it.contentEquals(topic) } || (includeControlTopics && ControlTopic.entries.toTypedArray()
-        .any { it.value.contentEquals(topic) })
+    subscribedTopics.any { it.contentEquals(topic) } || (otherIncludedTopics.any { it.value.contentEquals(topic) })
 
 class PuroConsumer(
     val streamDirectory: Path,
@@ -373,6 +372,9 @@ class PuroConsumer(
                                 abnormality == GetSignalRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
                             ) {
                                 break
+                            } else if (abnormality == GetSignalRecordsAbnormality.LowSignalBit) {
+                                logger.info("Low signal bit at ${readOffset + getSignalRecordsResult.offset}")
+                                // TODO: backoff on
                             }
                             logger.info("Standard record offset change ${getSignalRecordsResult.offset}")
                             readOffset += getSignalRecordsResult.offset

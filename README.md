@@ -83,6 +83,10 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-01-28
+
+Need some exponential backoff on the consumer: pick up at line 377 of the consumer
+
 ### 2026-01-27
 
 `SignalBitUtils` line 122 and `SignalBitProducer` line 76 are the starting places
