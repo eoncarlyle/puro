@@ -11,6 +11,7 @@ import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
 import kotlin.math.log
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
 sealed class ConsumerStartPoint {
@@ -81,10 +82,11 @@ class PuroConsumer(
     val onMessage: (PuroRecord, Logger) -> Unit,
 ) : Runnable {
     companion object {
-        private val retryDelay = 10.milliseconds.toJavaDuration()
+        private var defaultRetryDelay = 1.seconds.toJavaDuration()
+        private var maximumRetryDelay = 10.milliseconds.toJavaDuration()
 
         // I don't have very good intuition on this one, should be benchmarked
-        private val queueCapacity = 100_000
+        private val queueCapacity = 10_000
     }
 
     //TODO make this configurable:
@@ -96,6 +98,7 @@ class PuroConsumer(
     private var consumerOffset = 0L
     private var currentConsumerLocked = false
     private var consumeState: ConsumeState = ConsumeState.Standard
+    private var retryDelay = defaultRetryDelay
 
 
     val readBuffer = ByteBuffer.allocate(readBufferSize)
@@ -250,14 +253,19 @@ class PuroConsumer(
         fetchResult.onRight {
             when (it) {
                 null, is GetSignalRecordsAbnormality.Truncation -> records.onMessages()
-                    //logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
+                //logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
 
                 is GetSignalRecordsAbnormality.StandardTombstone, GetSignalRecordsAbnormality.RecordsAfterTombstone -> {
                     currentConsumerLocked = true
                     records.onMessages()
                 }
                 // The `consumedSegmentOrder` _really_ should not have changed between these two points
-                is GetSignalRecordsAbnormality.LowSignalBit -> segmentChangeQueue.put(ConsumerSegmentEvent(producerOffset, consumedSegmentOrder))
+                is GetSignalRecordsAbnormality.LowSignalBit -> segmentChangeQueue.put(
+                    ConsumerSegmentEvent(
+                        producerOffset,
+                        consumedSegmentOrder
+                    )
+                )
             }
         }.onLeft {
             //TODO an actually acceptable logging message
@@ -374,7 +382,10 @@ class PuroConsumer(
                                 break
                             } else if (abnormality == GetSignalRecordsAbnormality.LowSignalBit) {
                                 logger.info("Low signal bit at ${readOffset + getSignalRecordsResult.offset}")
-                                // TODO: backoff on
+                                    val incrementedDelay = retryDelay.toMillis() * 2
+                                    if (incrementedDelay < maximumRetryDelay.toMillis()) {
+                                        retryDelay = incrementedDelay.milliseconds.toJavaDuration()
+                                    }
                             }
                             logger.info("Standard record offset change ${getSignalRecordsResult.offset}")
                             readOffset += getSignalRecordsResult.offset
