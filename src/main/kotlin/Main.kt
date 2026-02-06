@@ -4,7 +4,10 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.nio.channels.FileChannel
+import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import kotlin.io.path.Path
 import kotlin.io.path.deleteIfExists
 
@@ -46,27 +49,27 @@ fun directory() {
 fun main() {
     val logger = LoggerFactory.getLogger("MainKt")
 
-    Path("/tmp/puro/stream0.puro").deleteIfExists()
+    //Path("/tmp/puro/stream0.puro").deleteIfExists()
     val initialProducer = SignalBitProducer(Path("/tmp/puro"), 10, 100, logger)
 
-    val firstValue = """
-    No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
-    deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
-    the lawful judgment of his equals or by the law of the land."
-    """.trimIndent().replace("\n", "")
+    //val firstValue = """
+    //No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
+    //deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
+    //the lawful judgment of his equals or by the law of the land."
+    //""".trimIndent().replace("\n", "")
 
-    initialProducer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())))
+    //initialProducer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())))
 
-    val consumer = PuroConsumer(
-        Path("/tmp/puro"),
-        listOf("testTopic"),
-        logger,
-        startPoint = ConsumerStartPoint.StreamBeginning,
-        readBufferSize = 100
-    ) { record, internalLogger ->
-        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
-    }
-    consumer.run()
+    //val consumer = PuroConsumer(
+    //    Path("/tmp/puro"),
+    //    listOf("testTopic"),
+    //    logger,
+    //    startPoint = ConsumerStartPoint.StreamBeginning,
+    //    readBufferSize = 100
+    //) { record, internalLogger ->
+    //    internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    //}
+    //consumer.run()
 
     //Thread.sleep(1000)
     val secondValue = """

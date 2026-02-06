@@ -5,7 +5,7 @@ import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import kotlin.experimental.and
+import kotlin.math.log
 import kotlin.math.min
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
@@ -71,10 +71,6 @@ class SignalBitProducer {
                     )
                 ).toSerialised()
 
-                times++
-                if (times == 2) {
-                    throw RuntimeException()
-                }
                 channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
                 channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 1)
             }
@@ -85,20 +81,23 @@ class SignalBitProducer {
         FileChannel.open(getActiveSegment(streamDirectory, true), StandardOpenOption.WRITE, StandardOpenOption.READ)
             .use { channel ->
                 withFileLockDimensions(channel, retryDelay, logger) { lockStart, fileSizeOnceLockAcquired ->
-                    if (lockStart > 0) {
-                        confirmLastBlockIntegrity(channel, lockStart, fileSizeOnceLockAcquired)
+                    val channelPosition = if (lockStart > 0) {
+                        lastBlockIntegrityCheckOrCleanup(channel, lockStart, fileSizeOnceLockAcquired) ?: fileSizeOnceLockAcquired
+                    } else {
+                        fileSizeOnceLockAcquired
                     }
-                    channel.position(fileSizeOnceLockAcquired)
+                    channel.position(channelPosition)
                     block(channel)
                 }
             }
     }
 
-    private fun confirmLastBlockIntegrity(
+    // Returns a long if offset needs to be adjusted
+    private fun lastBlockIntegrityCheckOrCleanup(
         channel: FileChannel,
         lockStart: Long,
         fileSizeOnceLockAcquired: Long
-    ) {
+    ): Long? {
         readBuffer.clear()
         channel.read(readBuffer, lockStart)
         val maybeBlockEndRecord = getSignalBitRecords(
@@ -139,16 +138,21 @@ class SignalBitProducer {
         readBuffer.flip()
 
         when (maybeBlockStartRecord) {
-            is GetSignalRecordsResult.Success -> {
-                if (maybeBlockStartRecord.records.size == 1) {
-                    maybeBlockStartRecord.records.first.value.rewind()
-                    assert(
-                        (maybeBlockStartRecord.records.first.value.get() and 0x01) == 1.toByte()
-                    ) { "Low signal bit" }
-                } else throw NotImplementedError("Segment cleanup not implemented")
+            // Load bearing to confirm that a standard abonormality will be returned TODO tests to establish this
+            is GetSignalRecordsResult.Success -> logger.info("Confirmed segment integrity")
+            is GetSignalRecordsResult.StandardAbnormality -> {
+                if (maybeBlockStartRecord.abnormality == GetSignalRecordsAbnormality.LowSignalBit) {
+                    val firstBadByte = lockStart - subBlockSize
+                    logger.warn("Truncating segment to $firstBadByte bytes")
+                    channel.truncate(firstBadByte)
+                    return firstBadByte
+                } else {
+                    throw IllegalStateException("Unexpected or corrupted segment state")
+                }
             }
-
-            else -> throw NotImplementedError("Segment cleanup not implemented")
+            else -> throw IllegalStateException("Unexpected or corrupted segment state")
         }
+
+        return null
     }
 }

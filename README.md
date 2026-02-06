@@ -83,6 +83,20 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-02-05
+
+The producer truncation wasn't as bad as I thought.
+When `reference/incompleteSegment.puro` was used as a starting, the `Main` in the commit containing this line 
+(`193adce`) reproduced `reference/completeSegment.puro`  byte-for-byte
+
+```shell
+$ sha256 completeSegment.puro
+SHA256 (completeSegment.puro) = b3acfca75c3e46e83547fff2245cff79bbe1ad439a50be394206694b2b286a1c
+
+$ sha256 stream0.puro
+SHA256 (stream0.puro) = b3acfca75c3e46e83547fff2245cff79bbe1ad439a50be394206694b2b286a1c
+```
+
 ### 2026-01-28
 
 Need some exponential backoff on the consumer: pick up at line 377 of the consumer

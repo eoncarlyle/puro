@@ -434,7 +434,7 @@ fun <T> withFileLockDimensions(
             lock = channel.tryLock(
                 blockEndOffset,
                 Long.MAX_VALUE - blockEndOffset,
-                false
+                true
             )
             if (lock == null) {
                 Thread.sleep(retryDelay) // Should eventually give up
