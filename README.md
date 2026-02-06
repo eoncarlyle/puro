@@ -87,7 +87,8 @@ carrying out the reads that is clearly not how things are going here.
 
 The producer truncation wasn't as bad as I thought.
 When `reference/incompleteSegment.puro` was used as a starting, the `Main` in the commit containing this line 
-(`193adce`) reproduced `reference/completeSegment.puro`  byte-for-byte
+(`193adce`) reproduced `reference/completeSegment.puro`  byte-for-byte. Next step is the consumer hash map to record 
+deletes to be referenced on event dequeue
 
 ```shell
 $ sha256 completeSegment.puro
