@@ -1,4 +1,6 @@
 import java.nio.ByteBuffer
+import java.nio.file.Files
+import java.nio.file.Path
 
 // TODO: See `createBatchedSignalRecordBuffer` logic
 fun createRecordBuffer(record: PuroRecord): ByteBuffer {
@@ -18,4 +20,13 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
     return ByteBuffer.allocate(recordLength).put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength)
         .put(encodedTopic)
         .put(encodedKeyLength).put(key).put(value).rewind()
+}
+
+inline fun <T> withTempDir(prefix: String, block: (Path) -> T): T {
+    val tempDir = Files.createTempDirectory(prefix)
+    return try {
+        block(tempDir)
+    } finally {
+        tempDir.toFile().deleteRecursively()
+    }
 }

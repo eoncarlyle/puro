@@ -15,6 +15,8 @@ dependencies {
     implementation(project(":"))
     implementation("org.jetbrains.kotlinx:kotlinx-benchmark-runtime:0.4.11")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    implementation("org.slf4j:slf4j-api:2.0.9")
+    implementation("org.slf4j:slf4j-simple:2.0.9")
 }
 
 kotlin {

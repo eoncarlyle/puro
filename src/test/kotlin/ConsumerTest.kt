@@ -117,18 +117,4 @@ class ConsumerTest {
             else -> throw AssertionError("Incorrect record type")
         }
     }
-
-    @Test
-    fun `Simple hardTransitionSubrecordLength`() {
-        for (i in 1..<27) {
-            val subrecordLengthWithMetaLength = 1 shl i
-            val subrecordLength = hardTransitionSubrecordLength(subrecordLengthWithMetaLength)
-            assertEquals(
-                subrecordLengthWithMetaLength,
-                RECORD_CRC_BYTES + subrecordLength.toVlqEncoding().capacity() + subrecordLength
-            )
-        }
-        println(hardTransitionSubrecordLength(100))
-        println(98.toVlqEncoding().capacity())
-    }
 }

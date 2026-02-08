@@ -49,7 +49,7 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Consumer handling segment cleanup deletion
 - [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
 - [ ] Producer active segment change handling
-- [ ] Handling messages larger than the read buffer
+- [x] Handling messages larger than the read buffer
 
 ## Message format
 
@@ -82,6 +82,17 @@ memory - there has to be some interesting work there. But as far as how Puro is 
 than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
+
+### 2026-02-08
+
+I had an epiphany about integer conversions: I _do_ have control over how large the segments are because I can 
+always require a segment rollover once the segment becomes larger than full  integer of bytes. So that saves a lot of 
+`long` conversions. As much as I would like to do soft static allocation á la
+[TigerBeetle](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/ARCHITECTURE.md#static-memory-allocation), I 
+think I would just leave that to be client specific. Perhaps a C client (or a later GC-free Kotlin client) would set 
+the maximum record size to be whatever Kafka supports with logged warnings for messages larger than that: if the 
+large message isn't being assembled then memory isn't being consumed. Also, where possible I should convert integers
+to unsigned integers, but I'm limited by what Java NIO can work with (which is not unsigned integers)
 
 ### 2026-02-05
 

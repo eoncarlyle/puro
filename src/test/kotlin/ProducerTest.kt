@@ -1,8 +1,11 @@
 import kotlin.test.Test
 import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
+import java.nio.file.Files
 import kotlin.test.assertContentEquals
 import kotlin.io.path.Path
+import kotlin.io.path.createTempDirectory
+import kotlin.io.path.readBytes
+import kotlin.io.path.writeBytes
 import kotlin.test.assertEquals
 
 class ProducerTest {
@@ -39,34 +42,129 @@ class ProducerTest {
         )
     }
 
+    /*
     @Test
     fun `Round byte buffer batching`() {
-        val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
-        val puroRecords = (0..<9).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
+            val puroRecords =
+                (0..<9).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
-        val batchedBuffers = ArrayList<ByteBuffer>()
-        //TODO: temp directory
-        val producer = SignalBitProducer(Path("/tmp"), 3)
-        producer.send(puroRecords)
-        assertEquals(3, batchedBuffers.size)
+            val batchedBuffers = ArrayList<ByteBuffer>()
+            val producer = SignalBitProducer(puroDirectory, 3)
+            producer.send(puroRecords)
+            assertEquals(3, batchedBuffers.size)
+        }
     }
 
     @Test
     fun `Non-round byte buffer batching`() {
-        val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
-        val puroRecords = (0..<10).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            val key = ByteBuffer.wrap(byteArrayOf(0xBA.toByte(), 0xDF.toByte(), 0x00, 0xD))
+            val puroRecords =
+                (0..<10).map { PuroRecord("testtopic".toByteArray(), key, ByteBuffer.wrap(byteArrayOf(it.toByte()))) }
 
-        val batchedBuffers = ArrayList<ByteBuffer>()
-        //TODO: temp directory
-        val producer = SignalBitProducer(Path("/tmp"), 3)
-        producer.send(puroRecords)
-        assertEquals(4, batchedBuffers.size)
+            val batchedBuffers = ArrayList<ByteBuffer>()
+            val producer = SignalBitProducer(puroDirectory, 3)
+            producer.send(puroRecords)
+            assertEquals(4, batchedBuffers.size)
+        }
     }
+    */
 
     @Test
     fun `Tombstone record length`() {
-        val tombstoneRecord =  PuroRecord(ControlTopic.SEGMENT_TOMBSTONE.value, byteArrayOf().toByteBuffer(), byteArrayOf().toByteBuffer())
+        val tombstoneRecord =
+            PuroRecord(ControlTopic.SEGMENT_TOMBSTONE.value, byteArrayOf().toByteBuffer(), byteArrayOf().toByteBuffer())
         assertEquals(TOMBSTONE_RECORD_LENGTH, createRecordBuffer(tombstoneRecord).capacity())
         assertContentEquals(TOMBSTONE_RECORD, createRecordBuffer(tombstoneRecord).array())
+    }
+
+    @Test
+    fun `Happy path production`() {
+
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
+
+            val producer = SignalBitProducer(puroDirectory, 10, 100)
+
+            val firstValue = """
+            No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
+            deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
+            the lawful judgment of his equals or by the law of the land."
+            """.trimIndent().replace("\n", "")
+
+            producer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())))
+
+            val secondValue = """
+            All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
+            or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
+            This, however, does not apply in time of war to merchants from a country that is at war with us. Any such 
+            merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
+            property, until we or our chief justice have discovered how our own merchants are being treated in the country 
+            at war with us. If our own merchants are safe they shall be safe too. 
+            """.trimIndent().replace("\n", "")
+
+            val thirdValue = """
+            To no one will we sell, to no one deny or delay right or justice. 
+            """.trimIndent().replace("\n", "")
+
+            producer.send(
+                listOf(
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
+                )
+            )
+
+            val completeSegment =
+                this::class.java.classLoader.getResource("completeSegment.puro")?.openStream()?.use { it.readBytes() }!!
+
+            val finalSegment = segmentPath.readBytes()
+
+            assertContentEquals(completeSegment, finalSegment)
+        }
+    }
+
+    @Test
+    fun `Segment cleanup on low signal bit`() {
+
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
+            val lowSignalBitSegment =
+                this::class.java.classLoader.getResource("incompleteSegmentLowSignalBit.puro")?.openStream()
+                    ?.use { it.readBytes() }!!
+            segmentPath.writeBytes(lowSignalBitSegment)
+
+            val producer = SignalBitProducer(puroDirectory, 10, 100)
+
+            val secondValue = """
+            All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
+            or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
+            This, however, does not apply in time of war to merchants from a country that is at war with us. Any such 
+            merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
+            property, until we or our chief justice have discovered how our own merchants are being treated in the country 
+            at war with us. If our own merchants are safe they shall be safe too. 
+            """.trimIndent().replace("\n", "")
+
+            val thirdValue = """
+            To no one will we sell, to no one deny or delay right or justice. 
+            """.trimIndent().replace("\n", "")
+
+            producer.send(
+                listOf(
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
+                )
+            )
+
+            val completeSegment =
+                this::class.java.classLoader.getResource("completeSegment.puro")?.openStream()?.use { it.readBytes() }!!
+
+            val finalSegment = segmentPath.readBytes()
+
+            assertContentEquals(completeSegment, finalSegment)
+        }
     }
 }

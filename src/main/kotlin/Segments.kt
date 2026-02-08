@@ -26,9 +26,11 @@ fun getSegmentOrder(path: Path) =
 
 // Note: spurious segment problem, needs to read that a segment tombstone has been placed, this will need to change
 fun getActiveSegment(streamDirectory: Path, asProducer: Boolean = false): Path {
+    /*
     if (!streamDirectory.exists()) {
         throw RuntimeException("Stream directory $streamDirectory does not exist")
     }
+     */
 
     val topFoundSegment = Files.list(streamDirectory).use { paths ->
         paths.filter { it.fileName.toString().matches(Regex("""${SEGMENT_PREFIX}\d+\.${FILE_EXTENSION}""")) }
@@ -49,9 +51,11 @@ fun getActiveSegment(streamDirectory: Path, asProducer: Boolean = false): Path {
 }
 
 fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryDelay: Duration, logger: Logger): Int {
+    /*
     if (!streamDirectory.exists()) {
         throw RuntimeException("Stream directory $streamDirectory does not exist")
     }
+     */
     return Files.list(streamDirectory)
         .sorted { a, b -> getSegmentOrder(a) - getSegmentOrder(b) }
         .filter { a -> isSegment(a) }

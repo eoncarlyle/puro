@@ -1,14 +1,17 @@
 package com.iainschmitt.puro
 
-import LegacyPuroProducer
 import PuroRecord
+import SignalBitProducer
 import org.openjdk.jmh.annotations.*
 import kotlinx.serialization.json.Json
 import org.openjdk.jmh.infra.Blackhole
 import toByteBuffer
 import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import kotlin.io.path.Path
+import kotlin.io.path.deleteExisting
+import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
 
 @State(Scope.Benchmark)
@@ -19,15 +22,13 @@ import kotlin.io.path.exists
 @Fork(1)
 open class PuroProducerBenchmark {
 
-    private lateinit var producer: LegacyPuroProducer
+    private lateinit var producer: SignalBitProducer
     private lateinit var records: List<PuroRecord>
-    var streamDirectory = Path("/tmp/puro")
+    private var streamDirectory: Path = Files.createTempDirectory(System.currentTimeMillis().toString())
 
     @Setup
     fun setup() {
-        resetDirectory()
-        Files.createDirectory(streamDirectory)
-        producer = LegacyPuroProducer(streamDirectory, 100)
+        producer = SignalBitProducer(streamDirectory, 8192)
 
         val flagsJson = object {}.javaClass.getResourceAsStream("/flags.json")
             ?.bufferedReader()
@@ -47,36 +48,11 @@ open class PuroProducerBenchmark {
         producer.send(records)
     }
 
-    @Benchmark
-    fun sendUnbatched() {
-        producer.send(records, false)
-    }
-
-    @Benchmark
-    fun serialiseUnbatched(blackhole: Blackhole) {
-        producer.sendUnbatched(records) { buffers ->
-            { _ -> blackhole.consume(buffers) }
-        }
-    }
-
-    @Benchmark
-    fun serialiseBatched(blackhole: Blackhole) {
-        producer.sendBatched(puroRecords = records) { buffer ->
-            { _ -> blackhole.consume(buffer) }
-        }
-    }
 
     @TearDown
     fun tearDown() {
-        resetDirectory()
-    }
-
-    private fun resetDirectory() {
         if (streamDirectory.exists()) {
-            Files.list(streamDirectory)
-                .sorted(Comparator.reverseOrder())
-                .forEach { Files.deleteIfExists(it) }
-            Files.deleteIfExists(streamDirectory)
+            streamDirectory.toFile().deleteRecursively()
         }
     }
 }
