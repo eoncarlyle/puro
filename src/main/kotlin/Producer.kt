@@ -5,7 +5,6 @@ import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import kotlin.math.log
 import kotlin.math.min
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
@@ -100,7 +99,7 @@ class SignalBitProducer {
     ): Long? {
         readBuffer.clear()
         channel.read(readBuffer, lockStart)
-        val maybeBlockEndRecord = getSignalBitRecords(
+        val maybeBlockEndRecord = getRecords(
             readBuffer,
             0, //lockStart,
             fileSizeOnceLockAcquired - lockStart,
@@ -110,7 +109,7 @@ class SignalBitProducer {
         readBuffer.flip()
 
         val blockEndRecord = when (maybeBlockEndRecord) {
-            is GetSignalRecordsResult.Success -> {
+            is GetRecordsResult.Success -> {
                 if (maybeBlockEndRecord.records.size == 1) {
                     maybeBlockEndRecord.records.first
                 } else throw NotImplementedError("Segment cleanup not implemented")
@@ -128,7 +127,7 @@ class SignalBitProducer {
         readBuffer.limit(BLOCK_START_RECORD_SIZE)
         channel.read(readBuffer, lockStart - subBlockSize)
 
-        val maybeBlockStartRecord = getSignalBitRecords(
+        val maybeBlockStartRecord = getRecords(
             readBuffer,
             0,
             BLOCK_START_RECORD_SIZE.toLong(),
@@ -139,9 +138,9 @@ class SignalBitProducer {
 
         when (maybeBlockStartRecord) {
             // Load bearing to confirm that a standard abonormality will be returned TODO tests to establish this
-            is GetSignalRecordsResult.Success -> logger.info("Confirmed segment integrity")
-            is GetSignalRecordsResult.StandardAbnormality -> {
-                if (maybeBlockStartRecord.abnormality == GetSignalRecordsAbnormality.LowSignalBit) {
+            is GetRecordsResult.Success -> logger.info("Confirmed segment integrity")
+            is GetRecordsResult.StandardAbnormality -> {
+                if (maybeBlockStartRecord.abnormality == GetRecordsAbnormality.LowSignalBit) {
                     val firstBadByte = lockStart - subBlockSize
                     logger.warn("Truncating segment to $firstBadByte bytes")
                     channel.truncate(firstBadByte)

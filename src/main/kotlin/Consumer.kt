@@ -9,7 +9,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
-import kotlin.math.log
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
@@ -35,7 +34,7 @@ private data class StandardRead(
     val finalConsumerOffset: Long,
     val fetchedRecords: ArrayList<PuroRecord>,
     val abnormalOffsetWindow: Pair<Long, Long>?,
-    val abnormality: GetSignalRecordsAbnormality?
+    val abnormality: GetRecordsAbnormality?
 )
 
 private sealed class FetchSuccess() {
@@ -158,13 +157,19 @@ class PuroConsumer(
         .path(streamDirectory)
         .listener { event: DirectoryChangeEvent ->
             // Diagnostic logs
-            logger.info(event.path().toString())
-            logger.info(event.eventType().toString())
+
+            //TODO cache this, no reason to recompute
+            //val currentSegmentOrder = getSegmentOrder(consumedSegment)
+            val incomingSegmentOrder = getSegmentOrder(event.path())
+
+            if (incomingSegmentOrder == -1) {
+                logger.info("Incoming non-segment ${event.eventType()} event for ${event.path()}")
+                return@listener
+            } else {
+                logger.info("Incoming ${event.eventType()} event for ${event.path()}")
+            }
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
-                    //TODO cache this, no reason to recompute
-                    //val currentSegmentOrder = getSegmentOrder(consumedSegment)
-                    val incomingSegmentOrder = getSegmentOrder(event.path())
                     if (incomingSegmentOrder == consumedSegmentOrder) {
                         segmentChangeQueue.offer(
                             ConsumerSegmentEvent(
@@ -181,16 +186,20 @@ class PuroConsumer(
                                 ConsumerSegmentEvent(Files.size(incomingSegment), incomingSegmentOrder)
                             )
                         }
-                    } else if (incomingSegmentOrder == -1) {
-                        logger.warn("Modify event for non-segment path ${event.path()} recorded")
                     } else {
-                        logger.warn("Modify event for segment ${event.path()} recorded, possible damaged data integrity")
+                        logger.warn(
+                            """Modify event for segment $incomingSegmentOrder recorded with 
+                            $consumedSegmentOrder as consumed order, possible damaged data integrity""".trimIndent()
+                                .replace("\n", " ")
+                        )
                     }
                 }
-
-                DirectoryChangeEvent.EventType.CREATE -> {} //May have active segment management concerns
-                DirectoryChangeEvent.EventType.DELETE -> {} //Log something probably
-                DirectoryChangeEvent.EventType.OVERFLOW -> {} //Log something probably
+                DirectoryChangeEvent.EventType.CREATE -> {}
+                DirectoryChangeEvent.EventType.DELETE -> {
+                } //Log something probably
+                DirectoryChangeEvent.EventType.OVERFLOW -> {
+                    logger.warn("Overflow event on segment $incomingSegmentOrder")
+                }
                 else -> {
                     logger.error("Illegal DirectoryChangeEvent ${event.eventType()} received")
                 } // This should never happen
@@ -252,15 +261,15 @@ class PuroConsumer(
 
         fetchResult.onRight {
             when (it) {
-                null, is GetSignalRecordsAbnormality.Truncation -> records.onMessages()
+                null, is GetRecordsAbnormality.Truncation -> records.onMessages()
                 //logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
 
-                is GetSignalRecordsAbnormality.StandardTombstone, GetSignalRecordsAbnormality.RecordsAfterTombstone -> {
+                is GetRecordsAbnormality.StandardTombstone, GetRecordsAbnormality.RecordsAfterTombstone -> {
                     currentConsumerLocked = true
                     records.onMessages()
                 }
                 // The `consumedSegmentOrder` _really_ should not have changed between these two points
-                is GetSignalRecordsAbnormality.LowSignalBit -> segmentChangeQueue.put(
+                is GetRecordsAbnormality.LowSignalBit -> segmentChangeQueue.put(
                     ConsumerSegmentEvent(
                         producerOffset,
                         consumedSegmentOrder
@@ -277,7 +286,7 @@ class PuroConsumer(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
         producerOffset: Long
-    ): ConsumerResult<GetSignalRecordsAbnormality?> {
+    ): ConsumerResult<GetRecordsAbnormality?> {
         val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, abnormality) = standardRead(
             fileChannel,
             consumerOffset,
@@ -294,7 +303,7 @@ class PuroConsumer(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
         producerOffset: Long
-    ): ConsumerResult<GetSignalRecordsAbnormality?> {
+    ): ConsumerResult<GetRecordsAbnormality?> {
         if (abnormalOffsetWindow == null) {
             return standardFetch(fileChannel, records, producerOffset)
         } else {
@@ -314,7 +323,7 @@ class PuroConsumer(
                     //readBuffer.rewind()
                     //val bufferOffset = (abnormalOffsetWindow!!.second - abnormalOffsetWindow!!.first).toInt()
                     //readBuffer.position(bufferOffset + 1)
-                    Either.Left<ConsumerError, GetSignalRecordsAbnormality?>(ConsumerError.HardTransitionFailure)
+                    Either.Left<ConsumerError, GetRecordsAbnormality?>(ConsumerError.HardTransitionFailure)
                 }
             )
         }
@@ -332,7 +341,7 @@ class PuroConsumer(
 
         val readRecords = ArrayList<PuroRecord>()
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
-        var abnormality: GetSignalRecordsAbnormality? = null
+        var abnormality: GetRecordsAbnormality? = null
         var isLastBatch = false
         var isPossibleLastBatch: Boolean
 
@@ -350,7 +359,7 @@ class PuroConsumer(
 
             when (consumeState) {
                 is ConsumeState.Standard -> {
-                    val getSignalRecordsResult = getSignalBitRecords(
+                    val getSignalRecordsResult = getRecords(
                         readBuffer,
                         0,
                         if (isPossibleLastBatch) {
@@ -364,34 +373,34 @@ class PuroConsumer(
                     )
 
                     when (getSignalRecordsResult) {
-                        is GetSignalRecordsResult.Success -> {
+                        is GetRecordsResult.Success -> {
                             readRecords.addAll(getSignalRecordsResult.records)
                             logger.info("Standard offset change ${getSignalRecordsResult.offset}")
                             readOffset += getSignalRecordsResult.offset
                         }
 
-                        is GetSignalRecordsResult.StandardAbnormality -> {
+                        is GetRecordsResult.StandardAbnormality -> {
                             abnormality = getSignalRecordsResult.abnormality
                             readRecords.addAll(getSignalRecordsResult.records)
                             // Talk as of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
-                            if (isPossibleLastBatch && abnormality == GetSignalRecordsAbnormality.Truncation) {
+                            if (isPossibleLastBatch && abnormality == GetRecordsAbnormality.Truncation) {
                                 readAbnormalOffsetWindow = consumerOffset to producerOffset
-                            } else if (abnormality == GetSignalRecordsAbnormality.RecordsAfterTombstone ||
-                                abnormality == GetSignalRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
+                            } else if (abnormality == GetRecordsAbnormality.RecordsAfterTombstone ||
+                                abnormality == GetRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
                             ) {
                                 break
-                            } else if (abnormality == GetSignalRecordsAbnormality.LowSignalBit) {
+                            } else if (abnormality == GetRecordsAbnormality.LowSignalBit) {
                                 logger.info("Low signal bit at ${readOffset + getSignalRecordsResult.offset}")
-                                    val incrementedDelay = retryDelay.toMillis() * 2
-                                    if (incrementedDelay < maximumRetryDelay.toMillis()) {
-                                        retryDelay = incrementedDelay.milliseconds.toJavaDuration()
-                                    }
+                                val incrementedDelay = retryDelay.toMillis() * 2
+                                if (incrementedDelay < maximumRetryDelay.toMillis()) {
+                                    retryDelay = incrementedDelay.milliseconds.toJavaDuration()
+                                }
                             }
                             logger.info("Standard record offset change ${getSignalRecordsResult.offset}")
                             readOffset += getSignalRecordsResult.offset
                         }
 
-                        is GetSignalRecordsResult.LargeRecordStart -> {
+                        is GetRecordsResult.LargeRecordStart -> {
                             logger.info("Consumer state transition to large")
                             consumeState = ConsumeState.Large(
                                 arrayListOf(getSignalRecordsResult.largeRecordFragment),
@@ -449,8 +458,8 @@ class PuroConsumer(
         getLargeSignalRecordsResult: GetLargeSignalRecordResult,
         currentConsumeState: ConsumeState.Large,
         readRecords: ArrayList<PuroRecord>,
-        lastAbnormality: GetSignalRecordsAbnormality?
-    ): GetSignalRecordsAbnormality? {
+        lastAbnormality: GetRecordsAbnormality?
+    ): GetRecordsAbnormality? {
         var abnormality = lastAbnormality
         if (getLargeSignalRecordsResult is GetLargeSignalRecordResult.LargeRecordEnd) {
             //val bytes = currentConsumeState.largeRecordFragments.map { it.array() }.reduce { acc, any -> acc + any }
@@ -463,7 +472,7 @@ class PuroConsumer(
 
                 is DeserialiseLargeReadResult.SegmentTombstone -> {
                     readRecords.add(deserialisedLargeRead.puroRecord)
-                    abnormality = GetSignalRecordsAbnormality.StandardTombstone
+                    abnormality = GetRecordsAbnormality.StandardTombstone
                 }
 
                 is DeserialiseLargeReadResult.IrrelevantTopic -> {

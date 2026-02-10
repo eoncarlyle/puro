@@ -97,3 +97,6 @@ fun ByteBuffer.getArraySlice(length: Int): Pair<ByteArray, Byte> {
     this.get(array, 0, array.size)
     return array to crc8(array)
 }
+
+fun String.toByteBuffer(): ByteBuffer = ByteBuffer.wrap(this.toByteArray())
+fun ByteArray.toByteBuffer(): ByteBuffer = ByteBuffer.wrap(this)

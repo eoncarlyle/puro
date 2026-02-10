@@ -10,27 +10,27 @@ import kotlin.experimental.and
 // This is for common utilities between consumers and producers for signal bit
 // consumers and producers
 
-sealed class GetSignalRecordsAbnormality {
-    data object Truncation : GetSignalRecordsAbnormality()
-    data object RecordsAfterTombstone : GetSignalRecordsAbnormality()
-    data object StandardTombstone : GetSignalRecordsAbnormality()
-    data object LowSignalBit : GetSignalRecordsAbnormality()
+sealed class GetRecordsAbnormality {
+    data object Truncation : GetRecordsAbnormality()
+    data object RecordsAfterTombstone : GetRecordsAbnormality()
+    data object StandardTombstone : GetRecordsAbnormality()
+    data object LowSignalBit : GetRecordsAbnormality()
 }
 
 
-sealed class GetSignalRecordsResult {
-    data class Success(val records: ArrayList<PuroRecord>, val offset: Long) : GetSignalRecordsResult()
+sealed class GetRecordsResult {
+    data class Success(val records: ArrayList<PuroRecord>, val offset: Long) : GetRecordsResult()
     data class StandardAbnormality(
         val records: ArrayList<PuroRecord>,
         val offset: Long,
-        val abnormality: GetSignalRecordsAbnormality
-    ) : GetSignalRecordsResult()
+        val abnormality: GetRecordsAbnormality
+    ) : GetRecordsResult()
 
     data class LargeRecordStart(
         val partialReadOffset: Long, // This does not represent finished reads
         val largeRecordFragment: ByteBuffer,
         val targetBytes: Long
-    ) : GetSignalRecordsResult()
+    ) : GetRecordsResult()
 }
 
 sealed class GetLargeSignalRecordResult(open val byteBuffer: ByteBuffer) {
@@ -75,14 +75,14 @@ fun getMessageCrc(
         .withCrc8(key)
         .withCrc8(value)
 
-fun getSignalBitRecords(
+fun getRecords(
     readBuffer: ByteBuffer,
     initialOffset: Long,
     finalOffset: Long,
     subscribedTopics: List<ByteArray>,
     isEndOfFetch: Boolean = false,
     logger: Logger = NOPLogger.NOP_LOGGER
-): GetSignalRecordsResult {
+): GetRecordsResult {
     val records = ArrayList<PuroRecord>()
     var offset = initialOffset
     var truncationAbnormality = false // Only matters if end-of-fetch
@@ -101,13 +101,13 @@ fun getSignalBitRecords(
                 fragmentBuffer.put(expectedCrc)
                 fragmentBuffer.put(lengthData.first.toVlqEncoding())
                 fragmentBuffer.put(readBuffer)
-                return GetSignalRecordsResult.LargeRecordStart(
+                return GetRecordsResult.LargeRecordStart(
                     finalOffset, // Not to be confusing but this should be the same as `readBuffer.capacity()`
                     fragmentBuffer,
                     (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
                 )
             } else { //Otherwise, return what we have at this point; subsequent reads will be by the large read function
-                return GetSignalRecordsResult.Success(records, offset)
+                return GetRecordsResult.Success(records, offset)
             }
         }
 
@@ -135,7 +135,7 @@ fun getSignalBitRecords(
         } else null
 
         if (topicMetadata?.first?.contentEquals(ControlTopic.BLOCK_START.value) == true && valueData?.first?.array()?.first() == 0.toByte())  {
-            return GetSignalRecordsResult.StandardAbnormality(records, initialOffset, GetSignalRecordsAbnormality.LowSignalBit)
+            return GetRecordsResult.StandardAbnormality(records, initialOffset, GetRecordsAbnormality.LowSignalBit)
         }
 
         // Note: The else branch isn't advancing the offset because it is possible that this is the next batch
@@ -156,11 +156,11 @@ fun getSignalBitRecords(
                 records.add(PuroRecord(topic, key, value))
             } else if (ControlTopic.SEGMENT_TOMBSTONE.value.contentEquals(topic)) {
                 val abnormality = if (isEndOfFetch || readBuffer.hasRemaining()) {
-                    GetSignalRecordsAbnormality.RecordsAfterTombstone
+                    GetRecordsAbnormality.RecordsAfterTombstone
                 } else {
-                    GetSignalRecordsAbnormality.StandardTombstone
+                    GetRecordsAbnormality.StandardTombstone
                 }
-                return GetSignalRecordsResult.StandardAbnormality(records, offset, abnormality)
+                return GetRecordsResult.StandardAbnormality(records, offset, abnormality)
             }
 
             offset += totalLength
@@ -170,13 +170,13 @@ fun getSignalBitRecords(
     }
 
     return if (truncationAbnormality) {
-        GetSignalRecordsResult.StandardAbnormality(
+        GetRecordsResult.StandardAbnormality(
             records,
             offset,
-            GetSignalRecordsAbnormality.Truncation
+            GetRecordsAbnormality.Truncation
         )
     } else {
-        GetSignalRecordsResult.Success(records, offset)
+        GetRecordsResult.Success(records, offset)
     }
 }
 
@@ -461,10 +461,10 @@ fun getMaybeSignalRecord(
     readBuffer: ByteBuffer,
     lockStart: Long,
     lockEnd: Long
-): GetSignalRecordsResult {
+): GetRecordsResult {
     readBuffer.clear()
     channel.read(readBuffer, lockStart)
-    val maybeBlockEndRecord = getSignalBitRecords(
+    val maybeBlockEndRecord = getRecords(
         readBuffer,
         0, //lockStart,
         lockEnd - lockStart,

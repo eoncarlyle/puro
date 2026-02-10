@@ -83,6 +83,16 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-02-09
+
+For the segment-level hashmaps I'm not sure if I want to store a monotonically increasing long or a file size. File 
+size might be fraught with locking issues, but I don't love the monotonically increasing long. In both cases what we 
+are trying to establish is if an append has happened after a delete, so the delete -> append ordering is what happens.
+Maybe once an append 'cancels' a delete then the integers can stop monotonically increasing. Come to think of it, if 
+the order is append/cancel@0/append@1 then longs can be recycled once the append@1 resets the count. Maybe we're good.
+
+Also the `Low signal bits` test isn't very elegant and should be fixed
+
 ### 2026-02-08
 
 I had an epiphany about integer conversions: I _do_ have control over how large the segments are because I can 

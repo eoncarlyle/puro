@@ -128,7 +128,6 @@ class ProducerTest {
 
     @Test
     fun `Segment cleanup on low signal bit`() {
-
         withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
             val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
             val lowSignalBitSegment =

@@ -1,4 +1,7 @@
+import org.slf4j.helpers.NOPLogger.NOP_LOGGER
 import java.nio.ByteBuffer
+import java.nio.file.Files
+import kotlin.io.path.appendBytes
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -100,7 +103,7 @@ class ConsumerTest {
         consumerBuffer.rewind()
 
         //TODO Uncomment once logger is removed again
-        val getRecordsResult = getSignalBitRecords(
+        val getRecordsResult = getRecords(
             consumerBuffer,
             0,
             consumerBuffer.capacity().toLong(),
@@ -108,13 +111,61 @@ class ConsumerTest {
             true
         )
 
-        assertTrue { getRecordsResult is GetSignalRecordsResult.Success }
+        assertTrue { getRecordsResult is GetRecordsResult.Success }
 
         when (getRecordsResult) {
-            is GetSignalRecordsResult.Success -> {
+            is GetRecordsResult.Success -> {
                 assertEquals(4, getRecordsResult.records.size)
             }
             else -> throw AssertionError("Incorrect record type")
+        }
+    }
+
+    @Test
+    fun `Low signal bits`() {
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
+            val lowSignalBitWrite =
+                this::class.java.classLoader.getResource("incompleteSegmentLowSignalBit.puro")?.openStream()
+                    ?.use { it.readBytes() }!!
+
+            val consumer = PuroConsumer(
+                puroDirectory,
+                listOf("testTopic"),
+                logger = NOP_LOGGER,
+                startPoint = ConsumerStartPoint.StreamBeginning,
+                readBufferSize = 100,
+            ) { record, internalLogger ->
+                internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+            }
+            consumer.run()
+
+            val producer = SignalBitProducer(puroDirectory, 10, 100)
+
+            val secondValue = """
+            All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
+            or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
+            This, however, does not apply in time of war to merchants from a country that is at war with us. Any such 
+            merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
+            property, until we or our chief justice have discovered how our own merchants are being treated in the country 
+            at war with us. If our own merchants are safe they shall be safe too. 
+            """.trimIndent().replace("\n", "")
+
+            val thirdValue = """
+            To no one will we sell, to no one deny or delay right or justice. 
+            """.trimIndent().replace("\n", "")
+
+            producer.send(
+                listOf(
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
+                )
+            )
+            Thread.sleep(1000)
+            segmentPath.appendBytes(lowSignalBitWrite)
+
+            Thread.sleep(1000)
         }
     }
 }

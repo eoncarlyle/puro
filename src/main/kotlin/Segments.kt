@@ -51,11 +51,9 @@ fun getActiveSegment(streamDirectory: Path, asProducer: Boolean = false): Path {
 }
 
 fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryDelay: Duration, logger: Logger): Int {
-    /*
     if (!streamDirectory.exists()) {
         throw RuntimeException("Stream directory $streamDirectory does not exist")
     }
-     */
     return Files.list(streamDirectory)
         .sorted { a, b -> getSegmentOrder(a) - getSegmentOrder(b) }
         .filter { a -> isSegment(a) }
@@ -71,7 +69,7 @@ fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryD
                             lockStart + BLOCK_END_RECORD_SIZE + 1
                         )
                         readBuffer.clear()
-                        record is GetSignalRecordsResult.Success && ControlTopic.BLOCK_END.equals(record.records.first().topic)
+                        record is GetRecordsResult.Success && ControlTopic.BLOCK_END.equals(record.records.first().topic)
                     } else {
                         false
                     }
