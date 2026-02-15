@@ -2,8 +2,6 @@ import kotlin.test.Test
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import kotlin.test.assertContentEquals
-import kotlin.io.path.Path
-import kotlin.io.path.createTempDirectory
 import kotlin.io.path.readBytes
 import kotlin.io.path.writeBytes
 import kotlin.test.assertEquals
@@ -86,7 +84,7 @@ class ProducerTest {
         withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
             val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
 
-            val producer = SignalBitProducer(puroDirectory, 10, 100)
+            val producer = Producer(puroDirectory, 10, 100)
 
             val firstValue = """
             No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
@@ -135,7 +133,7 @@ class ProducerTest {
                     ?.use { it.readBytes() }!!
             segmentPath.writeBytes(lowSignalBitSegment)
 
-            val producer = SignalBitProducer(puroDirectory, 10, 100)
+            val producer = Producer(puroDirectory, 10, 100)
 
             val secondValue = """
             All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 

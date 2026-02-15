@@ -72,7 +72,7 @@ fun isRelevantTopic(
 ): Boolean =
     subscribedTopics.any { it.contentEquals(topic) } || (otherIncludedTopics.any { it.value.contentEquals(topic) })
 
-class PuroConsumer(
+class Consumer(
     val streamDirectory: Path,
     serialisedTopicNames: List<String>,
     val logger: Logger,

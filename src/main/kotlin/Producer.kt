@@ -19,7 +19,7 @@ data class SerialisedPuroRecord(
     val value: ByteBuffer
 )
 
-class SignalBitProducer {
+class Producer {
     val streamDirectory: Path
     val maximumWriteBatchSize: Int
     val readBufferSize: Int

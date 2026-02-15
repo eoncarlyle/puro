@@ -83,6 +83,12 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-02-15
+
+I had a complete epiphany about how the consumer should work: the `segmentChangeQueue` isn't the only way to provide 
+the consumer an update as to update the consumer on new activity. There could just be a 'last safe' situation, but 
+may need to be careful with deletes. May need to have a new 'evaluation' consumer state to measure file size
+
 ### 2026-02-09
 
 For the segment-level hashmaps I'm not sure if I want to store a monotonically increasing long or a file size. File 

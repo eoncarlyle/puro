@@ -77,18 +77,18 @@ fun getMessageCrc(
 
 fun getRecords(
     readBuffer: ByteBuffer,
-    initialOffset: Long,
-    finalOffset: Long,
+    initialBufferOffset: Long,
+    finalBufferOffset: Long,
     subscribedTopics: List<ByteArray>,
     isEndOfFetch: Boolean = false,
     logger: Logger = NOPLogger.NOP_LOGGER
 ): GetRecordsResult {
     val records = ArrayList<PuroRecord>()
-    var offset = initialOffset
+    var bufferOffset = initialBufferOffset
     var truncationAbnormality = false // Only matters if end-of-fetch
 
-    readBuffer.position(initialOffset.toInt()) //Saftey issue
-    readBuffer.limit(finalOffset.toInt()) //Saftey issue
+    readBuffer.position(initialBufferOffset.toInt()) //Saftey issue
+    readBuffer.limit(finalBufferOffset.toInt()) //Saftey issue
 
     while (readBuffer.hasRemaining()) {
         // Compare with getLargeRead
@@ -96,18 +96,18 @@ fun getRecords(
         val lengthData = readBuffer.fromSafeVlq() //The readSaftey doesn't actually do anything
 
         if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second > readBuffer.capacity())) {
-            if (offset == 0L) { //It is acceptable to start a read with a large message
+            if (bufferOffset == 0L) { //It is acceptable to start a read with a large message
                 val fragmentBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + lengthData.second + readBuffer.remaining())
                 fragmentBuffer.put(expectedCrc)
                 fragmentBuffer.put(lengthData.first.toVlqEncoding())
                 fragmentBuffer.put(readBuffer)
                 return GetRecordsResult.LargeRecordStart(
-                    finalOffset, // Not to be confusing but this should be the same as `readBuffer.capacity()`
+                    finalBufferOffset, // Not to be confusing but this should be the same as `readBuffer.capacity()`
                     fragmentBuffer,
                     (RECORD_CRC_BYTES + lengthData.second + lengthData.first).toLong()
                 )
             } else { //Otherwise, return what we have at this point; subsequent reads will be by the large read function
-                return GetRecordsResult.Success(records, offset)
+                return GetRecordsResult.Success(records, bufferOffset)
             }
         }
 
@@ -120,8 +120,8 @@ fun getRecords(
         if (topicMetadata == null || !isRelevantTopic(topicMetadata.first, subscribedTopics, listOf(ControlTopic.BLOCK_START))) {
 
             if (lengthData != null && (RECORD_CRC_BYTES + lengthData.second + lengthData.first) <= readBuffer.remaining()) {
-                offset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
-                readBuffer.position(offset.toInt())
+                bufferOffset += (RECORD_CRC_BYTES + lengthData.second + lengthData.first)
+                readBuffer.position(bufferOffset.toInt())
                 continue
             }
         } else logger.debug("${expectedCrc}, ${topicMetadata.first.decodeToString()}")
@@ -135,7 +135,7 @@ fun getRecords(
         } else null
 
         if (topicMetadata?.first?.contentEquals(ControlTopic.BLOCK_START.value) == true && valueData?.first?.array()?.first() == 0.toByte())  {
-            return GetRecordsResult.StandardAbnormality(records, initialOffset, GetRecordsAbnormality.LowSignalBit)
+            return GetRecordsResult.StandardAbnormality(records, initialBufferOffset, GetRecordsAbnormality.LowSignalBit)
         }
 
         // Note: The else branch isn't advancing the offset because it is possible that this is the next batch
@@ -160,10 +160,10 @@ fun getRecords(
                 } else {
                     GetRecordsAbnormality.StandardTombstone
                 }
-                return GetRecordsResult.StandardAbnormality(records, offset, abnormality)
+                return GetRecordsResult.StandardAbnormality(records, bufferOffset, abnormality)
             }
 
-            offset += totalLength
+            bufferOffset += totalLength
         } else {
             truncationAbnormality = true
         }
@@ -172,11 +172,11 @@ fun getRecords(
     return if (truncationAbnormality) {
         GetRecordsResult.StandardAbnormality(
             records,
-            offset,
+            bufferOffset,
             GetRecordsAbnormality.Truncation
         )
     } else {
-        GetRecordsResult.Success(records, offset)
+        GetRecordsResult.Success(records, bufferOffset)
     }
 }
 

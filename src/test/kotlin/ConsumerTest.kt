@@ -1,3 +1,5 @@
+import com.github.valfirst.slf4jtest.LoggingEvent
+import com.github.valfirst.slf4jtest.TestLoggerFactory
 import org.slf4j.helpers.NOPLogger.NOP_LOGGER
 import java.nio.ByteBuffer
 import java.nio.file.Files
@@ -10,6 +12,8 @@ import kotlin.test.assertTrue
 
 
 class ConsumerTest {
+
+    val testLogger = TestLoggerFactory.getTestLogger(ConsumerTest::class.java)
     @Test
     fun `Happy Path getRecord`() {
         val expectedTopic = "country-codes".toByteArray()
@@ -33,8 +37,8 @@ class ConsumerTest {
         val result = getRecord(buffer)
         assertTrue { result.isRight() }
 
-        result.map { result ->
-            val (actualTopic, actualKey, actualValue) = result.first
+        result.map { recordPair ->
+            val (actualTopic, actualKey, actualValue) = recordPair.first
             assertContentEquals(expectedTopic, actualTopic)
             assertContentEquals(expectedKey.array(), actualKey.array())
             assertContentEquals(expectedValue.array(), actualValue.array())
@@ -54,8 +58,8 @@ class ConsumerTest {
         val result = getRecord(buffer)
         assertTrue { result.isRight() }
 
-        result.map { result ->
-            val (actualTopic, actualKey, actualValue) = result.first
+        result.map { recordPair ->
+            val (actualTopic, actualKey, actualValue) = recordPair.first
             assertContentEquals(expectedTopic, actualTopic)
             assertContentEquals(expectedKey.array(), actualKey.array())
             assertContentEquals(expectedValue.array(), actualValue.array())
@@ -129,18 +133,21 @@ class ConsumerTest {
                 this::class.java.classLoader.getResource("incompleteSegmentLowSignalBit.puro")?.openStream()
                     ?.use { it.readBytes() }!!
 
-            val consumer = PuroConsumer(
+            var count = 0;
+
+            val consumer = Consumer(
                 puroDirectory,
                 listOf("testTopic"),
-                logger = NOP_LOGGER,
+                logger = testLogger,
                 startPoint = ConsumerStartPoint.StreamBeginning,
                 readBufferSize = 100,
             ) { record, internalLogger ->
+                count++;
                 internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
             }
             consumer.run()
 
-            val producer = SignalBitProducer(puroDirectory, 10, 100)
+            val producer = Producer(puroDirectory, 10, 100)
 
             val secondValue = """
             All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
@@ -162,10 +169,13 @@ class ConsumerTest {
                     PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
                 )
             )
-            Thread.sleep(1000)
-            segmentPath.appendBytes(lowSignalBitWrite)
 
-            Thread.sleep(1000)
+            // Suspicious and frankly strange timing here, not sure what the deal with that is
+            Thread.sleep(100)
+            segmentPath.appendBytes(lowSignalBitWrite)
+            Thread.sleep(100)
+            assertEquals(count, 3)
+            testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
         }
     }
 }

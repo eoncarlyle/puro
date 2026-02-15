@@ -1,15 +1,9 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
-import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import org.slf4j.event.Level
 import java.nio.channels.FileChannel
-import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.Paths
-import java.nio.file.StandardCopyOption
 import kotlin.io.path.Path
-import kotlin.io.path.deleteIfExists
 
 class DirectoryWatchingUtility(directoryToWatch: Path?, onEvent: (DirectoryChangeEvent) -> Unit) {
     val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
@@ -50,7 +44,7 @@ fun main() {
     val logger = LoggerFactory.getLogger("MainKt")
 
     //Path("/tmp/puro/stream0.puro").deleteIfExists()
-    val initialProducer = SignalBitProducer(Path("/tmp/puro"), 10, 100, logger)
+    val initialProducer = Producer(Path("/tmp/puro"), 10, 100, logger)
 
     //val firstValue = """
     //No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
