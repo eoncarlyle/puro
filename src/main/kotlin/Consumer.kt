@@ -432,7 +432,7 @@ class Consumer(
                     val offsetChange =
                         getLargeSignalRecordsResult.byteBuffer.limit()  //Talk: assumes buffers not rewound, also kinda annoying bug found here
                     readOffset += offsetChange
-                    logger.info("Large record offset change ${offsetChange} to ${readOffset}")
+                    logger.info("Large record offset change $offsetChange to $readOffset")
 
                     abnormality = deserialiseLargeReadWithAbnormalityTracking(
                         getLargeSignalRecordsResult,

@@ -2,8 +2,11 @@ import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
 import java.nio.channels.FileChannel
+import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.Path
+import kotlin.io.path.appendBytes
+import kotlin.io.path.deleteIfExists
 
 class DirectoryWatchingUtility(directoryToWatch: Path?, onEvent: (DirectoryChangeEvent) -> Unit) {
     val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
@@ -43,29 +46,52 @@ fun directory() {
 fun main() {
     val logger = LoggerFactory.getLogger("MainKt")
 
-    //Path("/tmp/puro/stream0.puro").deleteIfExists()
-    val initialProducer = Producer(Path("/tmp/puro"), 10, 100, logger)
+    Path("/tmp/puro/stream0.puro").deleteIfExists()
+    val puroDirectory = Path("/tmp/puro")
+    val initialProducer = Producer(puroDirectory, 10, 100, logger)
 
-    //val firstValue = """
-    //No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
-    //deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
-    //the lawful judgment of his equals or by the law of the land."
-    //""".trimIndent().replace("\n", "")
+    val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
+    val lowSignalBitWrite = Files.readAllBytes(Path.of("/Users/iain/code/puro/reference/completeSegment.puro"))
 
-    //initialProducer.send(listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())))
+    var count = 0;
 
-    //val consumer = PuroConsumer(
-    //    Path("/tmp/puro"),
-    //    listOf("testTopic"),
-    //    logger,
-    //    startPoint = ConsumerStartPoint.StreamBeginning,
-    //    readBufferSize = 100
-    //) { record, internalLogger ->
-    //    internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
-    //}
-    //consumer.run()
+    val consumer = Consumer(
+        puroDirectory,
+        listOf("testTopic"),
+        logger = logger,
+        startPoint = ConsumerStartPoint.StreamBeginning,
+        readBufferSize = 100,
+    ) { record, internalLogger ->
+        count++;
+        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    }
+    consumer.run()
 
-    //Thread.sleep(1000)
+    val producer = Producer(puroDirectory, 10, 100)
+    /*
+    val firstValue = """
+            All fines that have been given to us unjustly and against the law of the land, and all fines that we have exacted
+            unjustly, shall be entirely remitted or the matter decided by a majority judgment of the twenty-five barons referred to
+            below in the clause for securing the peace (§61) together with Stephen, archbishop of Canterbury, if he can be present,
+            and such others as he wishes to bring with him. If the archbishop cannot be present, proceedings shall continue without
+            him, provided that if any of the twenty-five barons has been involved in a similar suit himself, his judgment shall be
+            set aside, and someone else chosen and sworn in his place, as a substitute for the single occasion, by the rest of the
+            twenty-five.
+            """.trimIndent().replace("\n", "")
+
+    val secondValue = """
+            Earls and barons shall be fined only by their equals, and in proportion to the gravity of their offence.
+            """.trimIndent().replace("\n", "")
+     */
+    //segmentPath.appendBytes(lowSignalBitWrite)
+
+
+    val firstValue = """
+    No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
+    deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
+    the lawful judgment of his equals or by the law of the land."
+    """.trimIndent().replace("\n", "")
+
     val secondValue = """
     All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
     or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
@@ -81,11 +107,19 @@ fun main() {
 
     initialProducer.send(
         listOf(
+            PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer()),
             PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
             PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
             PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
         )
     )
+
+    Thread.sleep(100)
+
+    // Suspicious and frankly strange timing here, not sure what the deal with that is
+    Thread.sleep(100)
+    //segmentPath.appendBytes(lowSignalBitWrite)
+    Thread.sleep(200)
 }
 
 /*

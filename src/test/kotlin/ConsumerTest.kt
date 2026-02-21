@@ -1,6 +1,4 @@
-import com.github.valfirst.slf4jtest.LoggingEvent
 import com.github.valfirst.slf4jtest.TestLoggerFactory
-import org.slf4j.helpers.NOPLogger.NOP_LOGGER
 import java.nio.ByteBuffer
 import java.nio.file.Files
 import kotlin.io.path.appendBytes
@@ -14,6 +12,7 @@ import kotlin.test.assertTrue
 class ConsumerTest {
 
     val testLogger = TestLoggerFactory.getTestLogger(ConsumerTest::class.java)
+
     @Test
     fun `Happy Path getRecord`() {
         val expectedTopic = "country-codes".toByteArray()
@@ -121,17 +120,19 @@ class ConsumerTest {
             is GetRecordsResult.Success -> {
                 assertEquals(4, getRecordsResult.records.size)
             }
+
             else -> throw AssertionError("Incorrect record type")
         }
     }
 
     @Test
-    fun `Low signal bits`() {
+    fun `Low signal bit fetch ignored`() {
         withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
             val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
             val lowSignalBitWrite =
                 this::class.java.classLoader.getResource("incompleteSegmentLowSignalBit.puro")?.openStream()
                     ?.use { it.readBytes() }!!
+            segmentPath.appendBytes(lowSignalBitWrite)
 
             var count = 0;
 
@@ -147,26 +148,90 @@ class ConsumerTest {
             }
             consumer.run()
 
+            // Suspicious and frankly strange timing here, not sure what the deal with that is
+            Thread.sleep(1000)
+            assertEquals(count, 0)
+            testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
+        }
+    }
+
+    @Test
+    fun `High signal bit fetch consumed`() {
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
+            val lowSignalBitWrite =
+                this::class.java.classLoader.getResource("completeSegment.puro")?.openStream()
+                    ?.use { it.readBytes() }!!
+            segmentPath.appendBytes(lowSignalBitWrite)
+
+            var count = 0;
+
+            val consumer = Consumer(
+                puroDirectory,
+                listOf("testTopic"),
+                logger = testLogger,
+                startPoint = ConsumerStartPoint.StreamBeginning,
+                readBufferSize = 100,
+            ) { record, internalLogger ->
+                count++;
+                internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+            }
+            consumer.run()
+
+            // Suspicious and frankly strange timing here, not sure what the deal with that is
+            Thread.sleep(1000)
+            assertEquals(count, 4)
+            testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
+        }
+    }
+
+    @Test
+    fun `Complete writes are the only messages read when sandwiched by incomplete writes`() {
+        //withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+        withPersistentDir("/tmp/puro") { puroDirectory ->
+            val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
+            val lowSignalBitWrite =
+                this::class.java.classLoader.getResource("incompleteSegmentLowSignalBit.puro")?.openStream()
+                    ?.use { it.readBytes() }!!
+
+            var count = 0;
+
+            val consumer = Consumer(
+                puroDirectory,
+                listOf("testTopic"),
+                logger = testLogger,
+                startPoint = ConsumerStartPoint.StreamBeginning,
+                readBufferSize = 100,
+            ) { record, internalLogger ->
+                count++;
+                println(String(record.value.array()))
+                internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+            }
+            consumer.run()
+
             val producer = Producer(puroDirectory, 10, 100)
 
+            val firstValue = """
+            All fines that have been given to us unjustly and against the law of the land, and all fines that we have exacted
+            unjustly, shall be entirely remitted or the matter decided by a majority judgment of the twenty-five barons referred to
+            below in the clause for securing the peace (§61) together with Stephen, archbishop of Canterbury, if he can be present,
+            and such others as he wishes to bring with him. If the archbishop cannot be present, proceedings shall continue without
+            him, provided that if any of the twenty-five barons has been involved in a similar suit himself, his judgment shall be
+            set aside, and someone else chosen and sworn in his place, as a substitute for the single occasion, by the rest of the
+            twenty-five.
+            """.trimIndent().replace("\n", "")
+
             val secondValue = """
-            All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
-            or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
-            This, however, does not apply in time of war to merchants from a country that is at war with us. Any such 
-            merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
-            property, until we or our chief justice have discovered how our own merchants are being treated in the country 
-            at war with us. If our own merchants are safe they shall be safe too. 
+            Earls and barons shall be fined only by their equals, and in proportion to the gravity of their offence.
             """.trimIndent().replace("\n", "")
 
-            val thirdValue = """
-            To no one will we sell, to no one deny or delay right or justice. 
-            """.trimIndent().replace("\n", "")
-
+            segmentPath.appendBytes(lowSignalBitWrite)
+            //Thread.sleep(100)
             producer.send(
                 listOf(
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer()),
                     PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
-                    PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
-                    PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer())
                 )
             )
 
@@ -174,7 +239,7 @@ class ConsumerTest {
             Thread.sleep(100)
             segmentPath.appendBytes(lowSignalBitWrite)
             Thread.sleep(100)
-            assertEquals(count, 3)
+            assertEquals(3, count)
             testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
         }
     }

@@ -83,11 +83,28 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-02-21
+
+Greping for `testKey`:
+```shell
+$ grep -oba "testKey" stream0.pur
+```
+
+Today I have mostly been confused by my own tests; I'm finally picking this back up
+
+```text
+00000140: 0139 ad04 0102 0000 71fb 0409 7465 7374 // Incomplete
+00000140: 0139 5904 0102 0001 71fb 0409 7465 7374 // Complete
+```
+
+This is on byte 0x140, so I think there is a good block followed by a bad one?
+
 ### 2026-02-15
 
 I had a complete epiphany about how the consumer should work: the `segmentChangeQueue` isn't the only way to provide 
 the consumer an update as to update the consumer on new activity. There could just be a 'last safe' situation, but 
-may need to be careful with deletes. May need to have a new 'evaluation' consumer state to measure file size
+may need to be careful with deletes. May need to have a new 'evaluation' consumer state to measure file size - I 
+need to actually draw out the state machine on this one
 
 ### 2026-02-09
 

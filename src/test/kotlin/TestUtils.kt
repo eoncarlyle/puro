@@ -23,11 +23,16 @@ fun createRecordBuffer(record: PuroRecord): ByteBuffer {
         .put(encodedKeyLength).put(key).put(value).rewind()
 }
 
-inline fun <T> withTempDir(prefix: String, block: (Path) -> T): T {
+fun <T> withTempDir(prefix: String, block: (Path) -> T): T {
     val tempDir = Files.createTempDirectory(prefix)
     return try {
         block(tempDir)
     } finally {
         tempDir.toFile().deleteRecursively()
     }
+}
+
+fun <T> withPersistentDir(prefix: String, block: (Path) -> T): T {
+    Files.deleteIfExists(Path.of(prefix, "stream0.puro"))
+    return block(Path.of(prefix))
 }
