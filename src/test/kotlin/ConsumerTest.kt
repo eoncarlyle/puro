@@ -149,7 +149,6 @@ class ConsumerTest {
             consumer.run()
 
             // Suspicious and frankly strange timing here, not sure what the deal with that is
-            Thread.sleep(1000)
             assertEquals(count, 0)
             testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
         }
@@ -160,7 +159,7 @@ class ConsumerTest {
         withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
             val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
             val lowSignalBitWrite =
-                this::class.java.classLoader.getResource("completeSegment.puro")?.openStream()
+                this::class.java.classLoader.getResource("singleRunCompleteSegment.puro")?.openStream()
                     ?.use { it.readBytes() }!!
             segmentPath.appendBytes(lowSignalBitWrite)
 
@@ -179,7 +178,7 @@ class ConsumerTest {
             consumer.run()
 
             // Suspicious and frankly strange timing here, not sure what the deal with that is
-            Thread.sleep(1000)
+            Thread.sleep(25)
             assertEquals(count, 4)
             testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
         }

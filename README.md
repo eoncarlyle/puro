@@ -99,6 +99,8 @@ Today I have mostly been confused by my own tests; I'm finally picking this back
 
 This is on byte 0x140, so I think there is a good block followed by a bad one?
 
+RE: `3f6be85`: how on earth did anything work 
+
 ### 2026-02-15
 
 I had a complete epiphany about how the consumer should work: the `segmentChangeQueue` isn't the only way to provide 
