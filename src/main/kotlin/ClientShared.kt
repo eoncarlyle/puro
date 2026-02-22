@@ -99,7 +99,7 @@ fun getRecords(
             if (bufferOffset == 0L) { //It is acceptable to start a read with a large message
                 val fragmentBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + lengthData.second + readBuffer.remaining())
                 fragmentBuffer.put(expectedCrc)
-                fragmentBuffer.put(lengthData.first.toVlqEncoding())
+                fragmentBuffer.put(lengthData.first.toVlqEncoding().rewind())
                 fragmentBuffer.put(readBuffer)
                 fragmentBuffer.position(finalBufferOffset.toInt())
                 return GetRecordsResult.LargeRecordStart(
