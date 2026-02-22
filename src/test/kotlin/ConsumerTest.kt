@@ -226,7 +226,6 @@ class ConsumerTest {
             """.trimIndent().replace("\n", "")
 
             segmentPath.appendBytes(lowSignalBitWrite)
-            //Thread.sleep(100)
             producer.send(
                 listOf(
                     PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer()),

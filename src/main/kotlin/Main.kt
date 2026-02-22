@@ -48,10 +48,9 @@ fun main() {
 
     Path("/tmp/puro/stream0.puro").deleteIfExists()
     val puroDirectory = Path("/tmp/puro")
-    val initialProducer = Producer(puroDirectory, 10, 100, logger)
 
     val segmentPath = Files.createFile(puroDirectory.resolve("stream0.puro"))
-    val lowSignalBitWrite = Files.readAllBytes(Path.of("/Users/iain/code/puro/reference/completeSegment.puro"))
+    val lowSignalBitWrite = Files.readAllBytes(Path.of("/Users/iain/code/puro/src/test/resources/incompleteSegmentLowSignalBit.puro"))
 
     var count = 0;
 
@@ -68,7 +67,7 @@ fun main() {
     consumer.run()
 
     val producer = Producer(puroDirectory, 10, 100)
-    /*
+
     val firstValue = """
             All fines that have been given to us unjustly and against the law of the land, and all fines that we have exacted
             unjustly, shall be entirely remitted or the matter decided by a majority judgment of the twenty-five barons referred to
@@ -82,69 +81,21 @@ fun main() {
     val secondValue = """
             Earls and barons shall be fined only by their equals, and in proportion to the gravity of their offence.
             """.trimIndent().replace("\n", "")
-     */
-    //segmentPath.appendBytes(lowSignalBitWrite)
 
+    segmentPath.appendBytes(lowSignalBitWrite)
 
-    val firstValue = """
-    No free man shall be seized or imprisoned, or stripped of his rights or possessions, or outlawed or exiled, or
-    deprived of his standing in any way, nor will we proceed with force against him, or send others to do so, except by
-    the lawful judgment of his equals or by the law of the land."
-    """.trimIndent().replace("\n", "")
-
-    val secondValue = """
-    All merchants may enter or leave England unharmed and without fear, and may stay or travel within it, by land 
-    or water, for purposes of trade, free from all illegal exactions, in accordance with ancient and lawful customs. 
-    This, however, does not apply in time of war to merchants from a country that is at war with us. Any such 
-    merchants found in our country at the outbreak of war shall be detained without injury to their persons or 
-    property, until we or our chief justice have discovered how our own merchants are being treated in the country 
-    at war with us. If our own merchants are safe they shall be safe too. 
-    """.trimIndent().replace("\n", "")
-
-    val thirdValue = """
-    To no one will we sell, to no one deny or delay right or justice. 
-    """.trimIndent().replace("\n", "")
-
-    initialProducer.send(
+    producer.send(
         listOf(
             PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer()),
             PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer()),
-            PuroRecord("testTopic", "testKey".toByteBuffer(), thirdValue.toByteBuffer()),
-            PuroRecord("testTopic", "testKey".toByteBuffer(), "SmallValue".toByteBuffer())
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer())
         )
     )
 
     Thread.sleep(100)
 
     // Suspicious and frankly strange timing here, not sure what the deal with that is
-    Thread.sleep(100)
-    //segmentPath.appendBytes(lowSignalBitWrite)
+    //Thread.sleep(100)
+    segmentPath.appendBytes(lowSignalBitWrite)
     Thread.sleep(200)
 }
-
-/*
-fun main() {
-    Path("/tmp/puro/segment0.puro").deleteIfExists()
-    val producer = LegacyPuroProducer(Path("/tmp/puro"), 10)
-    val logger = LoggerFactory.getLogger("MainKt")
-    val consumer = PuroConsumer(Path("/tmp/puro"), listOf("testTopic"), logger, startPoint = ConsumerStartPoint.StreamBeginning, readBufferSize = 100) {
-        println("${String(it.topic)}/${String(it.key.array())}/${String(it.value.array())}")
-    }
-    consumer.run()
-    //Thread.sleep(1)
-    var increment = 0
-    repeat(1) {
-        val messages = (0..<1).map {
-            increment++
-            PuroRecord(
-                "testTopic", "key${increment}".toByteBuffer(),
-                ("value${(0..<250).map { "_" }.joinToString { "" } }" + "!").toByteBuffer()
-            )
-        }
-        logger.info("Sending batch")
-        producer.send(messages)
-        //Thread.sleep(100)
-    }
-}
-
-*/

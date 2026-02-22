@@ -101,6 +101,7 @@ fun getRecords(
                 fragmentBuffer.put(expectedCrc)
                 fragmentBuffer.put(lengthData.first.toVlqEncoding())
                 fragmentBuffer.put(readBuffer)
+                fragmentBuffer.position(finalBufferOffset.toInt())
                 return GetRecordsResult.LargeRecordStart(
                     finalBufferOffset, // Not to be confusing but this should be the same as `readBuffer.capacity()`
                     fragmentBuffer,
@@ -320,6 +321,7 @@ fun getLargeSignalRecords(
         val fragmentBuffer = ByteBuffer.allocate((targetBytes - collectedBytes).toInt()) // Saftey, also allocation
 
         fragmentBuffer.put(initialOffset.toInt(), readBuffer, 0, (targetBytes - collectedBytes).toInt())
+        fragmentBuffer.position(fragmentBuffer.capacity())
         // Talk: Yikes
         // "This method transfers length bytes into this buffer from the given source buffer, starting at the given
         // offset in the source buffer and the given index in this buffer. The positions of both buffers are unchanged."
