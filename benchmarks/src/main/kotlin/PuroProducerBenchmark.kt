@@ -44,7 +44,6 @@ open class PuroProducerBenchmark {
         producer.send(records)
     }
 
-
     @TearDown
     fun tearDown() {
         if (streamDirectory.exists()) {
