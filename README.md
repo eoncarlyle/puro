@@ -83,6 +83,25 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-02-23
+
+When talking with Jesse today I had the realisation that the block-end message integrity checks aren't enough. If 
+one is rather unlucky, you have an incomplete write that leaves the final bytes equivalent to a valid block-end 
+message that points to a valid, unrelated block-start message. So the producers will always need to verify the integrity
+of the entire segment before they can consume anything new.
+
+So does the producer need to be a full consumer too? Does this defeat the whole purpose of the project? I don't 
+think so. If the block start message also contains the subblock size, this could be checked by the producer. I don't 
+think there is a way for the last message to be coincidental garbage that points to another coincidental garbage 
+imposter block start message, provided the sublock length actually lines up? The garbage issue requires going 
+outside of the known block so I think the only other piece of this is that the producer would need to confirm that 
+the last subblock doesn't point to an index it has already cleared. Because the producer has to confirm soundness 
+down the entire length of the segment, this isn't something new.
+
+On a more pressing note, the current large read in `Main.kt` is failing. Tomorrow I need to check _why_, a cursory 
+look shows that these should be okay bytes; I think my existing command-line tools are usable here (but I need to 
+start passing proper CLI args for the segment definition)
+
 ### 2026-02-21
 
 Greping for `testKey`:

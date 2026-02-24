@@ -95,7 +95,7 @@ fun getRecords(
         val expectedCrc = readBuffer.get()
         val lengthData = readBuffer.fromSafeVlq() //The readSaftey doesn't actually do anything
 
-        if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second > readBuffer.capacity())) {
+        if (lengthData != null && (RECORD_CRC_BYTES + lengthData.first + lengthData.second > readBuffer.remaining())) {
             if (bufferOffset == 0L) { //It is acceptable to start a read with a large message
                 val fragmentBuffer = ByteBuffer.allocate(RECORD_CRC_BYTES + lengthData.second + readBuffer.remaining())
                 fragmentBuffer.put(expectedCrc)
