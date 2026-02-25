@@ -46,7 +46,7 @@ fun directory() {
 }
 
 
-fun main() {
+fun reallyLargeRead() {
     val logger = LoggerFactory.getLogger("MainKt")
     Path("/tmp/puro/stream0.puro").deleteIfExists()
     val puroDirectory = Path("/tmp/puro")
@@ -86,4 +86,41 @@ fun main() {
     consumer.run()
     producer.send(records)
     semaphore.acquire()
+}
+
+fun main() {
+    val logger = LoggerFactory.getLogger("MainKt")
+    Path("/tmp/puro/stream0.puro").deleteIfExists()
+    val puroDirectory = Path("/tmp/puro")
+    Path.of("/tmp/puro/stream0.puro").createFile()
+
+    val producer = Producer(puroDirectory, 8192)
+
+    val measurements = 1_000_000L;
+    var count = 0L
+    val averageMap = HashMap<String, Pair<Int, Double>>()
+    val semaphore = Semaphore(1, true)
+
+    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = logger) { record, internalLogger ->
+        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    }
+
+    val firstValue = """
+            All fines that have been given to us unjustly and against the law of the land, and all fines that we have exacted
+            unjustly, shall be entirely remitted or the matter decided by a majority judgment of the twenty-five barons referred to
+            below in the clause for securing the peace (§61) together with Stephen, archbishop of Canterbury, if he can be present,
+            and such others as he wishes to bring with him. If the archbishop cannot be present, proceedings shall continue without
+            him, provided that if any of the twenty-five barons has been involved in a similar suit himself, his judgment shall be
+            set aside, and someone else chosen and sworn in his place, as a substitute for the single occasion, by the rest of the
+            twenty-five.
+            """.trimIndent().replace("\n", "")
+
+    producer.send(
+        listOf(
+            PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer()),
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer())
+        )
+    )
+
+    consumer.run()
 }

@@ -194,12 +194,14 @@ class Consumer(
                         )
                     }
                 }
+
                 DirectoryChangeEvent.EventType.CREATE -> {}
                 DirectoryChangeEvent.EventType.DELETE -> {
                 } //Log something probably
                 DirectoryChangeEvent.EventType.OVERFLOW -> {
                     logger.warn("Overflow event on segment $incomingSegmentOrder")
                 }
+
                 else -> {
                     logger.error("Illegal DirectoryChangeEvent ${event.eventType()} received")
                 } // This should never happen
@@ -497,7 +499,7 @@ class Consumer(
     }
 
     //The directory watcher sometimes doesn't catch events right after the consumer is created
-    //Duplicate `segmentChangeQueue` events are harmless
+//Duplicate `segmentChangeQueue` events are harmless
     private fun catchupThread() = Thread {
         Thread.sleep(100)
         getConsumedSegmentChannel().use { channel ->

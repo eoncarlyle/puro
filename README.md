@@ -102,6 +102,10 @@ On a more pressing note, the current large read in `Main.kt` is failing. Tomorro
 look shows that these should be okay bytes; I think my existing command-line tools are usable here (but I need to 
 start passing proper CLI args for the segment definition)
 
+Edit: I don't understand why tests pass with `readBuffer.capacity()` when I think it should really be `readBuffer.
+remaining()` in `getRecords`. The existing tests fail without it, perhaps the bug is cancelled out elsewhere. But 
+the place to start is with the existing tests.
+
 ### 2026-02-21
 
 Greping for `testKey`:
