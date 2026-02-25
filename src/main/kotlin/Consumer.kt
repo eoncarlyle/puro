@@ -130,27 +130,20 @@ class Consumer(
         while (getLowestSegmentOrder(streamDirectory) == -1) {
             Thread.sleep(retryDelay) // Should eventually give up
         }
-        when (startPoint) {
+        consumedSegmentOrder = when (startPoint) {
             // See README 'Stale and spurious segment problems'
-            is ConsumerStartPoint.StreamBeginning -> {
-                consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
-                // The answer to 'what happens if something is deleted at the worst time' is not very good here
-                val path = getSegmentPath(streamDirectory, consumedSegmentOrder)
-                path
-                    ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
-                // I don't think double events are risked by this, but it's taken care of by the `onConsumedSegmentAppend`
-                segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder))
-            }
-
-            is ConsumerStartPoint.Latest -> {
-                consumedSegmentOrder = getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
-                val path = getSegmentPath(streamDirectory, consumedSegmentOrder)
-                path
-                    ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
-                // See README 'raggged start'
-                segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder))
-            }
+            is ConsumerStartPoint.StreamBeginning -> getLowestSegmentOrder(streamDirectory)
+            // See README 'raggged start'
+            is ConsumerStartPoint.Latest -> getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
         }
+
+        consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
+        // The answer to 'what happens if something is deleted at the worst time' is not very good here
+        val path = getSegmentPath(streamDirectory, consumedSegmentOrder)
+        path
+            ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
+        // I don't think double events are risked by this, but it's taken care of by the `onConsumedSegmentAppend`
+        segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder))
     }
 
     private val watcher: DirectoryWatcher? = DirectoryWatcher.builder()

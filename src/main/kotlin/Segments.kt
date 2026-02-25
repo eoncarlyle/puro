@@ -57,6 +57,7 @@ fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryD
     return Files.list(streamDirectory)
         .sorted { a, b -> getSegmentOrder(a) - getSegmentOrder(b) }
         .filter { a -> isSegment(a) }
+        .peek { println(it) }
         .filter { path ->
             return@filter FileChannel.open(path, StandardOpenOption.READ).use { channel ->
                 withFileLockDimensions(channel, retryDelay, logger) { lockStart, _ ->
