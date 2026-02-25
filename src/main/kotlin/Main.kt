@@ -55,13 +55,13 @@ fun reallyLargeRead() {
     val producer = Producer(puroDirectory, 8192)
 
     val measurementFactory = MeasurementFactory()
-    val measurements = 1_000_000L;
+    val measurements = 10_000_000L;
     var count = 0L
     val averageMap = HashMap<String, Pair<Int, Double>>()
     val semaphore = Semaphore(1, true)
+    semaphore.acquire()
 
-    val consumer = Consumer(puroDirectory, listOf("temperatures"), logger = NOPLogger.NOP_LOGGER) { record, _ ->
-        semaphore.acquire()
+    val consumer = Consumer(puroDirectory, listOf("temperatures"), logger) { record, _ ->
         val stationName = String(record.key.array())
         val measurement = record.value.getDouble()
         val averageKey = averageMap[stationName]
@@ -76,19 +76,24 @@ fun reallyLargeRead() {
         }
         count++
 
-        if (count == measurements + 1L) {
+        if (count % 100000 == 0L) {
+            logger.info(count.toString())
+        }
+
+        if (count == measurements) {
             semaphore.release()
         }
     }
 
     val records = measurementFactory.getMeasurements(measurements)
-
     consumer.run()
     producer.send(records)
     semaphore.acquire()
+    consumer.stopListening()
+    return
 }
 
-fun main() {
+fun smallThenLargeRead() {
     val logger = LoggerFactory.getLogger("MainKt")
     Path("/tmp/puro/stream0.puro").deleteIfExists()
     val puroDirectory = Path("/tmp/puro")
@@ -117,10 +122,14 @@ fun main() {
 
     producer.send(
         listOf(
-            PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer()),
-            PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer())
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer()),
+            PuroRecord("testTopic", "testKey".toByteBuffer(), firstValue.toByteBuffer())
         )
     )
 
     consumer.run()
+}
+
+fun main() {
+    reallyLargeRead()
 }

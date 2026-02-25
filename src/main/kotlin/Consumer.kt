@@ -8,7 +8,11 @@ import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
+import java.time.Duration
 import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.Semaphore
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
@@ -98,7 +102,7 @@ class Consumer(
     private var currentConsumerLocked = false
     private var consumeState: ConsumeState = ConsumeState.Standard
     private var retryDelay = defaultRetryDelay
-
+    private var changeQueueListenerRunning = AtomicBoolean(true)
 
     val readBuffer = ByteBuffer.allocate(readBufferSize)
     private var abnormalOffsetWindow: Pair<Long, Long>? = null
@@ -119,7 +123,10 @@ class Consumer(
     private var segmentChangeQueue = PriorityBlockingQueue(queueCapacity, compareConsumerSegmentPair)
     private var subscribedTopics = serialisedTopicNames.map { it.toByteArray() }
 
-    private fun stopListening() = watcher?.close()
+    fun stopListening() {
+        directoryWatcher?.close()
+        changeQueueListenerRunning.set(false)
+    }
 
     /*
         Before the watch service is started two preconditions need to be met
@@ -146,7 +153,7 @@ class Consumer(
         segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder))
     }
 
-    private val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
+    private val directoryWatcher = DirectoryWatcher.builder()
         .path(streamDirectory)
         .listener { event: DirectoryChangeEvent ->
             // Diagnostic logs
@@ -202,41 +209,45 @@ class Consumer(
         }
         .build()
 
+    private val changeQueueListenerThread = Thread {
+        while (changeQueueListenerRunning.get()) {
+            val event = segmentChangeQueue.poll(25, TimeUnit.MICROSECONDS) ?: continue
+
+            val (producerOffset, incomingSegmentOrder) = event
+            if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
+                logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
+            } else if (incomingSegmentOrder == consumedSegmentOrder) {
+                logger.info("Incoming producer offset: $producerOffset")
+                onConsumedSegmentAppend(producerOffset)
+            } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
+                // The priority queue will ensure all records of order _N_ will be received before all records of
+                // order _N+1_
+                val nextSegment = getSegmentPath(streamDirectory, consumedSegmentOrder + 1)
+                if (nextSegment != null) {
+                    consumedSegmentOrder++
+                    currentConsumerLocked = false
+                    onConsumedSegmentAppend(producerOffset)
+                } else {
+                    logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
+                }
+            } else {
+                logger.error("Illegal ConsumerSegmentEvent: segment order $incomingSegmentOrder, at lock state $currentConsumerLocked")
+            }
+        }
+    }
+
+    private val directoryWatcherThread = Thread {
+        directoryWatcher.watch()
+    }
+
     override fun run() {
         logger.info("Starting Consumer")
-        Thread {
-            watcherPreInitialisation()
-            watcher?.watch()
-        }.start()
+        watcherPreInitialisation()
+        directoryWatcherThread.start()
         logger.info("Consumer Directory Watcher Configured")
 
         catchupThread().start()
-
-        Thread {
-            while (true) {
-                val (producerOffset, incomingSegmentOrder) = segmentChangeQueue.take()
-
-                if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
-                    logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
-                } else if (incomingSegmentOrder == consumedSegmentOrder) {
-                    logger.info("Incoming producer offset: $producerOffset")
-                    onConsumedSegmentAppend(producerOffset)
-                } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
-                    // The priority queue will ensure all records of order _N_ will be received before all records of
-                    // order _N+1_
-                    val nextSegment = getSegmentPath(streamDirectory, consumedSegmentOrder + 1)
-                    if (nextSegment != null) {
-                        consumedSegmentOrder++
-                        currentConsumerLocked = false
-                        onConsumedSegmentAppend(producerOffset)
-                    } else {
-                        logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
-                    }
-                } else {
-                    logger.error("Illegal ConsumerSegmentEvent: segment order $incomingSegmentOrder, at lock state $currentConsumerLocked")
-                }
-            }
-        }.start()
+        changeQueueListenerThread.start()
     }
 
     private fun ArrayList<PuroRecord>.onMessages() {

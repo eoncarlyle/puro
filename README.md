@@ -83,6 +83,18 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-02-24
+
+`ac1e6e2`: I don't have a great model as to why that fixed the proceeding bug
+`segmentChangeQueue.take()`: `PriorityBlockingQueue#take` is blocking, took me too long to realise this was the issue
+
+The benchmarks are almost entirely working but there is a little cleanup that is still required here: 
+
+```text
+Exception in thread "Thread-72" java.nio.file.ClosedWatchServiceException
+	at io.methvin.watchservice.AbstractWatchService.checkOpen(AbstractWatchService.java:102)
+```
+
 ### 2026-02-23
 
 When talking with Jesse today I had the realisation that the block-end message integrity checks aren't enough. If 

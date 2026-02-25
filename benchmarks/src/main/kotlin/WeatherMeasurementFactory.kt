@@ -9,7 +9,7 @@ import kotlin.math.sqrt
 import kotlin.random.Random
 
 // Adapted from https://github.com/darioradecic/python-1-billion-row-challenge/blob/main/data/createMeasurements.py
-class MeasurementFactory(private val stdDev: Double = 10.0) {
+class WeatherMeasurementFactory(private val stdDev: Double = 10.0) {
     private val rng = Random(1689)
 
     private fun nextGaussian(mean: Double, std: Double): Double {

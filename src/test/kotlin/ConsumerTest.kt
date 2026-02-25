@@ -203,7 +203,6 @@ class ConsumerTest {
                 readBufferSize = 100,
             ) { record, internalLogger ->
                 count++;
-                println(String(record.value.array()))
                 internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
             }
             consumer.run()
