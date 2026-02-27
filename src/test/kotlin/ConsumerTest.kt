@@ -240,4 +240,5 @@ class ConsumerTest {
             testLogger.loggingEvents.stream().filter { event -> event.message == "Low signal bit at 1082" }
         }
     }
+
 }
