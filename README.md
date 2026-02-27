@@ -43,12 +43,15 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [x] Producer class, with runtime exception on integrity failure
 - [x] Consumer class
 - [x] Consumer class large reads
-- [ ] Consumer class checking signal bits
-- [ ] Investigate how annoying iterating down the full length of a nontrivially sized segment will be
+- [x] Consumer class checking signal bits
+- [ ] Producer total segment iteration
+- [ ] Producer segment iteration and subblock length on block-end messages
+- [ ] Investigate how long it will take to iterate down the full length of a nontrivially sized segment will be
 - [ ] Producer segment cleanup
 - [ ] Consumer handling segment cleanup deletion
 - [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
 - [ ] Producer active segment change handling
+- [ ] Consumer active segment change handling
 - [x] Handling messages larger than the read buffer
 
 ## Message format
@@ -82,6 +85,42 @@ memory - there has to be some interesting work there. But as far as how Puro is 
 than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
+
+### 2026-02-25
+It is certainly nice to have some benchmarks. This is what we have
+
+Dual benchmark, 1 million records: (min, avg, max) = (472.425, 515.485, 658.847), stdev = 48.937
+Puro producer benchmark: (min, avg, max) = (0.549, 0.552, 0.557), stdev = 0.003
+
+When running the dual benchmark with 10 million records, you'll observe the following:
+
+```text
+Exception in thread "Thread-2" java.lang.OutOfMemoryError: Java heap space
+	at java.base/java.util.Arrays.copyOf(Arrays.java:3482)
+	at java.base/java.util.ArrayList.grow(ArrayList.java:237)
+	at java.base/java.util.ArrayList.addAll(ArrayList.java:760)
+	at Consumer.standardRead(Consumer.kt:383)
+	at Consumer.standardFetch(Consumer.kt:296)
+	at Consumer.fetch(Consumer.kt:314)
+	at Consumer.onConsumedSegmentAppend$lambda$6(Consumer.kt:265)
+	at Consumer$$Lambda/0x0000007001095ec0.invoke(Unknown Source)
+	at Consumer.withConsumerLock(Consumer.kt:541)
+	at Consumer.onConsumedSegmentAppend(Consumer.kt:264)
+	at Consumer.changeQueueListenerThread$lambda$3(Consumer.kt:221)
+	at Consumer$$Lambda/0x000000700108a4a8.run(Unknown Source)
+	at java.base/java.lang.Thread.runWith(Thread.java:1596)
+	at java.base/java.lang.Thread.run(Thread.java:1583)
+```
+
+Once records are read the `readRecords` array is GC'd but there is an opportunity to pool the objects. One problem 
+is that we don't know how large the number of records per read will be. It likely is the case that some data 
+structure other than an `ArrayList` will make sense here. For all of my difficulties with buffers, some resizable 
+buffer with a cursor keeping track of position may be alright. The reason the cursor is important is to keep track 
+of the objects that have and have not been initialised; each element will be a non-null `PuroRecord`. If more 
+records in the previous read were returned than the current capacity of the buffer it will be resized. Future, 
+smaller reads will use the buffer semantics to progress only to the point that the buffer has been allocated. 
+
+Not wanting to expose the details of the backing data structure will be reason enough to hide some of the detail here. 
 
 ### 2026-02-24
 
