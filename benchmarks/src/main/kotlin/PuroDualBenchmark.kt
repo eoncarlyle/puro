@@ -24,7 +24,7 @@ open class PuroDualBenchmark {
     private lateinit var records: List<PuroRecord>
     private var streamDirectory: Path = Files.createTempDirectory(System.currentTimeMillis().toString())
     private var measurementFactory = WeatherMeasurementFactory()
-    private val measurements = 10_000_000L;
+    private val measurements = 1_000_000L;
     private var count = 0L
     private var averageMap = HashMap<String, Pair<Int, Double>>()
     private var semaphore = Semaphore(1, true)
