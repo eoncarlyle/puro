@@ -176,15 +176,18 @@ private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logge
     val blockBodySize =// need to shift over 1 for starting record
         puroRecords.mapIndexed { index, record -> buildProtoRecordAtIndex(index + 1, record, protoRecords) }
             .sum()
+
+    val subBlockLength = BLOCK_START_RECORD_SIZE + blockBodySize
     // If this isn't exactly `BLOCK_START_RECORD_SIZE`, there is a huge problem
-    val startBlockRecordSize = buildProtoRecordAtIndex(
+    val startBlockValue = ByteBuffer.allocate(5).put(0x00).putInt(subBlockLength).rewind()
+    buildProtoRecordAtIndex(
         0,
-        PuroRecord(ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), ByteBuffer.wrap(byteArrayOf(0x00))),
+        PuroRecord(ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), startBlockValue),
         protoRecords
     )
 
     val endBlockValue = ByteBuffer.allocate(4)
-    endBlockValue.putInt(startBlockRecordSize + blockBodySize)
+    endBlockValue.putInt(subBlockLength)
 
     val endBlockRecordSize = buildProtoRecordAtIndex(
         puroRecords.size + 1,
@@ -192,7 +195,7 @@ private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logge
         protoRecords
     )
 
-    val batchBuffer = ByteBuffer.allocate(startBlockRecordSize + blockBodySize + endBlockRecordSize)
+    val batchBuffer = ByteBuffer.allocate(subBlockLength + endBlockRecordSize)
 
     protoRecords.forEach { record: SerialisedPuroRecord? ->
         val (messageCrc,

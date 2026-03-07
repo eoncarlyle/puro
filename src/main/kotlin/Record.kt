@@ -5,9 +5,9 @@ const val TOMBSTONE_RECORD_LENGTH = 5
 const val RECORD_CRC_BYTES = 1
 
 // 1 byte value, 0 byte key, 1 byte topic
-const val BLOCK_START_RECORD_SIZE = 6
+const val BLOCK_START_RECORD_SIZE = 10
 // 4 byte value, 0 byte key, 1 byte topic
-const val BLOCK_END_RECORD_SIZE = 10
+const val BLOCK_END_RECORD_SIZE = 9
 
 // If you don't rewind, you will have problems!
 // The Haskellers have a point here!
