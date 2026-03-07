@@ -14,6 +14,26 @@ of bytes. Same applies for `ByteBuffer.getBufferSlice`, can reproduce this prett
 `getRecords` was incorrectly using the offsets as if it was operating on the active segment file stream rather than the
 read buffer, which introduced some issues. I _think_ I have those resolved now.
 
+## Signal Bit Action Items
+
+- [x] Producer class, with runtime exception on integrity failure
+- [x] Consumer class
+- [x] Consumer class large reads
+- [x] Consumer class checking signal bits
+- [x] Use the `ReadRecords`  data structure
+- [ ] Producer total segment iteration
+  - [ ] Change block start message to include block length 
+  - [ ] Finish `fullSegmentIntegrityCheck`
+  - [ ] Producer state machine (`ProducerSegmentState`)
+  - [ ] Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state tracking
+- [ ] Producer segment cleanup
+- [ ] Investigate how long it will take to iterate down the full length of a nontrivially sized segment will be
+- [ ] Consumer handling segment cleanup deletion
+- [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
+- [ ] Producer active segment change handling
+- [ ] Consumer active segment change handling
+- [x] Handling messages larger than the read buffer
+
 ## Initial Action Items
 
 - [ ] Stale and spurious segment problems
@@ -38,21 +58,6 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
-## Signal Bit Action Items
-
-- [x] Producer class, with runtime exception on integrity failure
-- [x] Consumer class
-- [x] Consumer class large reads
-- [x] Consumer class checking signal bits
-- [ ] Producer total segment iteration
-- [ ] Producer segment iteration and subblock length on block-end messages
-- [ ] Investigate how long it will take to iterate down the full length of a nontrivially sized segment will be
-- [ ] Producer segment cleanup
-- [ ] Consumer handling segment cleanup deletion
-- [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
-- [ ] Producer active segment change handling
-- [ ] Consumer active segment change handling
-- [x] Handling messages larger than the read buffer
 
 ## Message format
 
@@ -85,6 +90,20 @@ memory - there has to be some interesting work there. But as far as how Puro is 
 than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
+
+### 2026-03-07
+Q) Why do we need to traverse down the entire segment on producer startup?
+A) While an end-of-block message is what we expect for the last bytes of a message, we could get very unlucky and an
+incomplete write could exactly match an end-of-block message. The same argument applies for the block start message 
+that would be navigated to from the block end. However, if the producer has audited the length of the segment and has
+confirmed high signal bits across the length of the record, it can check if the block end message is coherant: if 
+the producer has checked soft integrity (i.e. not every message but that the block boundaries make sense and have high
+signal bits) from bytes 0 to _N_, if the incoming block end message points to a block start message that starts at 
+_N_ + 1 with a high signal bit, the producer knows that soundness has been demonstrated. Otherwise the producer can 
+do cleanup accordingly.
+
+This doesn't protect from 'bzyantine', if you will, faults if a bit is flipped within a segment. When I finally 
+write the final deal about this library, that should be addressed.
 
 ### 2026-02-25
 It is certainly nice to have some benchmarks. This is what we have
@@ -121,6 +140,14 @@ records in the previous read were returned than the current capacity of the buff
 smaller reads will use the buffer semantics to progress only to the point that the buffer has been allocated. 
 
 Not wanting to expose the details of the backing data structure will be reason enough to hide some of the detail here. 
+
+### 2026-03-07
+
+
+
+### 2026-02-28
+The new ReadRecords data structure did not prevent failures when `measurements = 10_000_000L;`  in 
+`PuroDualBenchmark`, but at the very least the failure is in a different place now which is nice
 
 ### 2026-02-24
 

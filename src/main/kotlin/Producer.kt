@@ -19,6 +19,10 @@ data class SerialisedPuroRecord(
     val value: ByteBuffer
 )
 
+enum class ProducerSegmentState {
+    INIT, READY, CLEANUP
+}
+
 class Producer {
     val streamDirectory: Path
     val maximumWriteBatchSize: Int
@@ -28,6 +32,7 @@ class Producer {
     private val readBuffer: ByteBuffer
     private val logger: Logger = NOPLogger.NOP_LOGGER
     var times = 0;
+    var producerState = ProducerSegmentState.INIT;
 
     companion object {
         // This should be configurable?
@@ -46,6 +51,7 @@ class Producer {
         this.readBufferSize = readBufferSize
         this.readBuffer = ByteBuffer.allocate(readBufferSize)
         this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
+
     }
 
     private fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -59,10 +65,10 @@ class Producer {
         for (step in 0..<stepCount) {
             val indices =
                 step * this.maximumWriteBatchSize..<min((step + 1) * this.maximumWriteBatchSize, puroRecords.size)
-            val batchedBuffer = createBatchedSignalRecordBuffer(puroRecords.slice(indices), logger)
+            val serialiseRecordBatch = getSerialiseRecordBatch(puroRecords.slice(indices), logger)
             this.withProducerLock { channel ->
                 val initialPosition = channel.position()
-                channel.write(batchedBuffer)
+                channel.write(serialiseRecordBatch)
 
                 val signalRecord = PuroRecord(
                     ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), ByteBuffer.wrap(
@@ -81,7 +87,8 @@ class Producer {
             .use { channel ->
                 withFileLockDimensions(channel, retryDelay, logger) { lockStart, fileSizeOnceLockAcquired ->
                     val channelPosition = if (lockStart > 0) {
-                        lastBlockIntegrityCheckOrCleanup(channel, lockStart, fileSizeOnceLockAcquired) ?: fileSizeOnceLockAcquired
+                        lastBlockIntegrityCheckOrCleanup(channel, lockStart, fileSizeOnceLockAcquired)
+                            ?: fileSizeOnceLockAcquired
                     } else {
                         fileSizeOnceLockAcquired
                     }
@@ -149,9 +156,96 @@ class Producer {
                     throw IllegalStateException("Unexpected or corrupted segment state")
                 }
             }
+
             else -> throw IllegalStateException("Unexpected or corrupted segment state")
         }
 
         return null
     }
+}
+
+private fun buildProtoRecordAtIndex(index: Int, record: PuroRecord, protoRecords: Array<SerialisedPuroRecord?>): Int {
+    val (serialisedRecord, recordLength) = record.toSerialised()
+    protoRecords[index] = serialisedRecord
+    return recordLength
+}
+
+// TODO: See `createRecordBuffer` logic in test Utils
+private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
+    val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
+    val blockBodySize =// need to shift over 1 for starting record
+        puroRecords.mapIndexed { index, record -> buildProtoRecordAtIndex(index + 1, record, protoRecords) }
+            .sum()
+    // If this isn't exactly `BLOCK_START_RECORD_SIZE`, there is a huge problem
+    val startBlockRecordSize = buildProtoRecordAtIndex(
+        0,
+        PuroRecord(ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), ByteBuffer.wrap(byteArrayOf(0x00))),
+        protoRecords
+    )
+
+    val endBlockValue = ByteBuffer.allocate(4)
+    endBlockValue.putInt(startBlockRecordSize + blockBodySize)
+
+    val endBlockRecordSize = buildProtoRecordAtIndex(
+        puroRecords.size + 1,
+        PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
+        protoRecords
+    )
+
+    val batchBuffer = ByteBuffer.allocate(startBlockRecordSize + blockBodySize + endBlockRecordSize)
+
+    protoRecords.forEach { record: SerialisedPuroRecord? ->
+        val (messageCrc,
+            encodedSubrecordLength,
+            encodedTopicLength,
+            encodedTopic,
+            encodedKeyLength,
+            key,
+            value) = record!!
+
+        batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
+            .put(encodedKeyLength).put(key).put(value)
+    }
+    return batchBuffer.rewind()
+}
+
+// This function is a little FP-heretical but I have at least partially a good reason for it; even if the `recordLength`
+//is rather awkward
+fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
+    val (topic, key, value) = this
+    rewindAll(key, value)
+
+    // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
+    val topicLength = topic.size
+    val encodedTopicLength = topicLength.toVlqEncoding()
+    val keyLength = key.capacity()
+    val encodedKeyLength = keyLength.toVlqEncoding()
+    val valueLength = value.capacity()
+
+    val subrecordLength =
+        encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+    val encodedSubrecordLength = subrecordLength.toVlqEncoding()
+
+    // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
+    val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
+
+    val messageCrc = getMessageCrc(
+        encodedSubrecordLength = encodedSubrecordLength,
+        encodedTopicLength = encodedTopicLength,
+        topic = topic,
+        encodedKeyLength = encodedKeyLength,
+        key = key,
+        value = value
+    )
+
+    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
+    return SerialisedPuroRecord(
+        messageCrc,
+        encodedSubrecordLength,
+        encodedTopicLength,
+        topic,
+        encodedKeyLength,
+        key,
+        value
+    ) to recordLength
 }

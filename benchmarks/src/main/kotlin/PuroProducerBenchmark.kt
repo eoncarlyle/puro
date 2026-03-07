@@ -40,7 +40,7 @@ open class PuroProducerBenchmark {
     }
 
     @Benchmark
-    fun sendBatched() {
+    fun producerBenchmark() {
         producer.send(records)
     }
 

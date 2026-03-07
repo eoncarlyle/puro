@@ -48,12 +48,12 @@ sealed class DeserialiseLargeReadResult {
     data class SegmentTombstone(val puroRecord: PuroRecord) : DeserialiseLargeReadResult()
 }
 
-sealed class ConsumeState {
-    data object Standard : ConsumeState()
+sealed class ReadState {
+    data object Standard : ReadState()
     data class Large(
         val largeRecordFragments: ArrayList<ByteBuffer>,
         var targetBytes: Long
-    ) : ConsumeState()
+    ) : ReadState()
 }
 
 private data class MultiFragmentVlq(val result: Int, val byteCount: Int, val crc8: Byte, val fragmentIndex: Int)
@@ -243,10 +243,10 @@ private fun multiFragmentArraySlice(
 
 // Compare with getSignalBitRecords
 fun deserialiseLargeRead(
-    consumeState: ConsumeState.Large,
+    readState: ReadState.Large,
     subscribedTopics: List<ByteArray>
 ): DeserialiseLargeReadResult {
-    val largeRecordFragments = consumeState.largeRecordFragments
+    val largeRecordFragments = readState.largeRecordFragments
     rewindAll(largeRecordFragments)
     var fragmentIndex = 0
 
@@ -333,93 +333,6 @@ fun getLargeSignalRecords(
     }
 }
 
-fun buildProtoRecordAtIndex(index: Int, record: PuroRecord, protoRecords: Array<SerialisedPuroRecord?>): Int {
-    val (serialisedRecord, recordLength) = record.toSerialised()
-    protoRecords[index] = serialisedRecord
-    return recordLength
-}
-
-// TODO: See `createRecordBuffer` logic in test Utils
-fun createBatchedSignalRecordBuffer(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
-    val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
-
-    val blockBodySize =// need to shift over 1 for starting record
-        puroRecords.mapIndexed { index, record -> buildProtoRecordAtIndex(index + 1, record, protoRecords) }
-            .sum()
-
-    val startBlockRecordSize = buildProtoRecordAtIndex(
-        0,
-        PuroRecord(ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), ByteBuffer.wrap(byteArrayOf(0x00))),
-        protoRecords
-    )
-
-    val endBlockValue = ByteBuffer.allocate(4)
-    endBlockValue.putInt(startBlockRecordSize + blockBodySize)
-
-    val endBlockRecordSize = buildProtoRecordAtIndex(
-        puroRecords.size + 1,
-        PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
-        protoRecords
-    )
-
-    val batchBuffer = ByteBuffer.allocate(startBlockRecordSize + blockBodySize + endBlockRecordSize)
-
-    protoRecords.forEach { record: SerialisedPuroRecord? ->
-        val (messageCrc,
-            encodedSubrecordLength,
-            encodedTopicLength,
-            encodedTopic,
-            encodedKeyLength,
-            key,
-            value) = record!!
-
-        batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
-            .put(encodedKeyLength).put(key).put(value)
-    }
-    return batchBuffer.rewind()
-}
-
-// This function is a little FP-heretical but I have at least partially a good reason for it; even if the `recordLength`
-//is rather awkward
-fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
-    val (topic, key, value) = this
-    rewindAll(key, value)
-
-    // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
-    val topicLength = topic.size
-    val encodedTopicLength = topicLength.toVlqEncoding()
-    val keyLength = key.capacity()
-    val encodedKeyLength = keyLength.toVlqEncoding()
-    val valueLength = value.capacity()
-
-    val subrecordLength =
-        encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-    val encodedSubrecordLength = subrecordLength.toVlqEncoding()
-
-    // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
-    val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
-
-    val messageCrc = getMessageCrc(
-        encodedSubrecordLength = encodedSubrecordLength,
-        encodedTopicLength = encodedTopicLength,
-        topic = topic,
-        encodedKeyLength = encodedKeyLength,
-        key = key,
-        value = value
-    )
-
-    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
-    return SerialisedPuroRecord(
-        messageCrc,
-        encodedSubrecordLength,
-        encodedTopicLength,
-        topic,
-        encodedKeyLength,
-        key,
-        value
-    ) to recordLength
-}
-
 // Dimensions are lockStart * fileSizeOnceLockAcquired
 fun <T> withFileLockDimensions(
     channel: FileChannel,
@@ -476,4 +389,11 @@ fun getMaybeSignalRecord(
     readBuffer.flip()
 
     return maybeBlockEndRecord
+}
+
+fun fullSegmentIntegrityCheck(channel: FileChannel) {
+    // 1) acquire read lock
+    // 2) Check signal bit of block-start message
+    // 3) Confirm consistent block-end message
+    // Repeat steps 2 and 3 until
 }

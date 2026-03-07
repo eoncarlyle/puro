@@ -8,9 +8,7 @@ import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import java.time.Duration
 import java.util.concurrent.PriorityBlockingQueue
-import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration.Companion.milliseconds
@@ -36,7 +34,7 @@ private sealed class ReadTombstoneStatus {
 
 private data class StandardRead(
     val finalConsumerOffset: Long,
-    val fetchedRecords: ArrayList<PuroRecord>,
+    val fetchedRecords: List<PuroRecord>,
     val abnormalOffsetWindow: Pair<Long, Long>?,
     val abnormality: GetRecordsAbnormality?
 )
@@ -100,7 +98,7 @@ class Consumer(
     private var consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
     private var consumerOffset = 0L
     private var currentConsumerLocked = false
-    private var consumeState: ConsumeState = ConsumeState.Standard
+    private var readState: ReadState = ReadState.Standard
     private var retryDelay = defaultRetryDelay
     private var changeQueueListenerRunning = AtomicBoolean(true)
 
@@ -345,7 +343,8 @@ class Consumer(
         var readOffset = startingReadOffset
         logger.info("Starting read offset $readOffset")
 
-        val readRecords = ArrayList<PuroRecord>()
+        //val readRecords = ArrayList<PuroRecord>()
+        val readRecords = ReadRecords()
         var readAbnormalOffsetWindow: Pair<Long, Long>? = null
         var abnormality: GetRecordsAbnormality? = null
         var isLastBatch = false
@@ -363,8 +362,8 @@ class Consumer(
             fileChannel.read(readBuffer)
             readBuffer.flip()
 
-            when (consumeState) {
-                is ConsumeState.Standard -> {
+            when (readState) {
+                is ReadState.Standard -> {
                     val getSignalRecordsResult = getRecords(
                         readBuffer,
                         0,
@@ -408,7 +407,7 @@ class Consumer(
 
                         is GetRecordsResult.LargeRecordStart -> {
                             logger.info("Consumer state transition to large")
-                            consumeState = ConsumeState.Large(
+                            readState = ReadState.Large(
                                 arrayListOf(getSignalRecordsResult.largeRecordFragment),
                                 getSignalRecordsResult.targetBytes
                             )
@@ -417,13 +416,13 @@ class Consumer(
                     }
                 }
 
-                is ConsumeState.Large -> {
+                is ReadState.Large -> {
                     // TODO consider if proving this type via thread saftey actually matters
-                    val currentConsumeState = consumeState as ConsumeState.Large
+                    val currentReadState = readState as ReadState.Large
                     // Check if using position is relevant here
                     val getLargeSignalRecordsResult = getLargeSignalRecords(
-                        currentConsumeState.targetBytes,
-                        currentConsumeState.largeRecordFragments.sumOf { it.position() }
+                        currentReadState.targetBytes,
+                        currentReadState.largeRecordFragments.sumOf { it.position() }
                             .toLong(), //! assumes buffers not rewound
                         readBuffer,
                         0,
@@ -434,7 +433,7 @@ class Consumer(
                         }
                     )
 
-                    currentConsumeState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
+                    currentReadState.largeRecordFragments.add(getLargeSignalRecordsResult.byteBuffer)
                     val offsetChange =
                         getLargeSignalRecordsResult.byteBuffer.limit()  //Talk: assumes buffers not rewound, also kinda annoying bug found here
                     readOffset += offsetChange
@@ -442,7 +441,7 @@ class Consumer(
 
                     abnormality = deserialiseLargeReadWithAbnormalityTracking(
                         getLargeSignalRecordsResult,
-                        currentConsumeState,
+                        currentReadState,
                         readRecords,
                         abnormality
                     )
@@ -454,7 +453,7 @@ class Consumer(
 
         return StandardRead(
             readOffset,
-            readRecords,
+            readRecords.get(),
             readAbnormalOffsetWindow,
             abnormality
         )
@@ -462,8 +461,8 @@ class Consumer(
 
     private fun deserialiseLargeReadWithAbnormalityTracking(
         getLargeSignalRecordsResult: GetLargeSignalRecordResult,
-        currentConsumeState: ConsumeState.Large,
-        readRecords: ArrayList<PuroRecord>,
+        currentReadState: ReadState.Large,
+        readRecords: ReadRecords,
         lastAbnormality: GetRecordsAbnormality?
     ): GetRecordsAbnormality? {
         var abnormality = lastAbnormality
@@ -471,7 +470,7 @@ class Consumer(
             //val bytes = currentConsumeState.largeRecordFragments.map { it.array() }.reduce { acc, any -> acc + any }
             //logger.info("[Consumer] multibyte: ${bytes.joinToString { it.toString() }}")
             //logger.info("[Consumer] multibyte message: ${bytes.decodeToString()}")
-            when (val deserialisedLargeRead = deserialiseLargeRead(currentConsumeState, subscribedTopics)) {
+            when (val deserialisedLargeRead = deserialiseLargeRead(currentReadState, subscribedTopics)) {
                 is DeserialiseLargeReadResult.Standard -> {
                     readRecords.add(deserialisedLargeRead.puroRecord)
                 }
@@ -488,7 +487,7 @@ class Consumer(
                 is DeserialiseLargeReadResult.CrcFailure -> logger.warn("CRC failure on large message")
             }
             logger.info("Consumer state transition to standard")
-            consumeState = ConsumeState.Standard
+            readState = ReadState.Standard
         }
         return abnormality
     }

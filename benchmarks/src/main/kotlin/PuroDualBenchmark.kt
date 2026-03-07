@@ -53,7 +53,7 @@ open class PuroDualBenchmark {
     }
 
     @Benchmark
-    fun run() {
+    fun dualProducerAndConsumerBenchmark() {
         producer.send(records)
         consumer.run()
         semaphore.acquire()

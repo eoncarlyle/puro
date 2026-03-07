@@ -1,13 +1,10 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
-import org.slf4j.helpers.NOPLogger
 import java.nio.channels.FileChannel
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.Semaphore
 import kotlin.io.path.Path
-import kotlin.io.path.appendBytes
 import kotlin.io.path.createFile
 import kotlin.io.path.deleteIfExists
 
@@ -130,6 +127,55 @@ fun smallThenLargeRead() {
     consumer.run()
 }
 
+fun secondaryProducerRead() {
+    val logger = LoggerFactory.getLogger("MainKt")
+    Path("/tmp/puro/stream0.puro").deleteIfExists()
+    val puroDirectory = Path("/tmp/puro")
+    Path.of("/tmp/puro/stream0.puro").createFile()
+
+    val firstProducer = Producer(puroDirectory, 8192)
+    firstProducer.send(
+        listOf(
+            PuroRecord(
+                "testTopic", "testKey".toByteBuffer(), """
+            In future it shall be lawful for any man to leave and return to our kingdom unharmed and without fear, by 
+            land or water, preserving his allegiance to us, except in time of war, for some short period, for the common 
+            benefit of the realm. People that have been imprisoned or outlawed in accordance with the law of the land, 
+            people from a country that is at war with us, and merchants – who shall be dealt with as stated above – are 
+            excepted from this provision.
+            """.trimIndent().replace("\n", " ").toByteBuffer()
+            )
+        )
+    )
+
+    val secondProducer = Producer(puroDirectory, 8192)
+
+    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = logger) { record, internalLogger ->
+        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    }
+
+    val secondValue = """
+            All fines that have been given to us unjustly and against the law of the land, and all fines that we have exacted
+            unjustly, shall be entirely remitted or the matter decided by a majority judgment of the twenty-five barons referred to
+            below in the clause for securing the peace (§61) together with Stephen, archbishop of Canterbury, if he can be present,
+            and such others as he wishes to bring with him. If the archbishop cannot be present, proceedings shall continue without
+            him, provided that if any of the twenty-five barons has been involved in a similar suit himself, his judgment shall be
+            set aside, and someone else chosen and sworn in his place, as a substitute for the single occasion, by the rest of the
+            twenty-five.
+            """.trimIndent().replace("\n", "")
+
+    secondProducer.send(
+        listOf(
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer()),
+            PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer())
+        )
+    )
+
+    consumer.run()
+}
+
 fun main() {
-    reallyLargeRead()
+    //smallThenLargeRead()
+    //reallyLargeRead()
+    secondaryProducerRead()
 }
