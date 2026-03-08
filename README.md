@@ -105,6 +105,13 @@ do cleanup accordingly.
 This doesn't protect from 'bzyantine', if you will, faults if a bit is flipped within a segment. When I finally 
 write the final deal about this library, that should be addressed.
 
+`a2fd50d`: A few surprises
+- As of `d6ea44b` the actual size of the block end message when a breakpoint is dropped in `buildProtoRecordAtIndex` 
+  was 9 bytes rather than 10
+- When increasing `BLOCK_START_RECORD_SIZE` breaks consumption
+I need to do some simple testing to see what is going on here - I must be reading the block end messages in such a 
+  way previous to `a2fd50d` that it didn't matter how the 
+
 ### 2026-02-25
 It is certainly nice to have some benchmarks. This is what we have
 
