@@ -9,20 +9,6 @@ import kotlin.math.min
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.toJavaDuration
 
-data class SerialisedPuroRecord(
-    val messageCrc: Byte,
-    val encodedSubrecordLength: ByteBuffer,
-    val encodedTopicLength: ByteBuffer,
-    val encodedTopic: ByteArray,
-    val encodedKeyLength: ByteBuffer,
-    val key: ByteBuffer,
-    val value: ByteBuffer
-)
-
-enum class ProducerSegmentState {
-    INIT, READY, CLEANUP
-}
-
 class Producer {
     val streamDirectory: Path
     val maximumWriteBatchSize: Int
@@ -30,7 +16,7 @@ class Producer {
     private var currentSegmentOrder: Int
     private var offset: Int
     private val readBuffer: ByteBuffer
-    private val logger: Logger = NOPLogger.NOP_LOGGER
+    private var logger: Logger = NOPLogger.NOP_LOGGER
     var times = 0;
     var producerState = ProducerSegmentState.INIT;
 
@@ -50,8 +36,8 @@ class Producer {
         this.maximumWriteBatchSize = maximumWriteBatchSize
         this.readBufferSize = readBufferSize
         this.readBuffer = ByteBuffer.allocate(readBufferSize)
+        this.logger = logger
         this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
-
     }
 
     private fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -77,7 +63,7 @@ class Producer {
                 ).toSerialised()
 
                 channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
-                println("first Crc: ${signalRecord.first.messageCrc.toString()}")
+                logger.debug("Block Start Crc: ${signalRecord.first.messageCrc.toString()}")
                 channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 5)
             }
         }
@@ -146,7 +132,7 @@ class Producer {
 
         when (maybeBlockStartRecord) {
             // Load bearing to confirm that a standard abonormality will be returned TODO tests to establish this
-            is GetRecordsResult.Success -> logger.info("Confirmed segment integrity")
+            is GetRecordsResult.Success -> logger.debug("Confirmed segment integrity")
             is GetRecordsResult.StandardAbnormality -> {
                 if (maybeBlockStartRecord.abnormality == GetRecordsAbnormality.LowSignalBit) {
                     val firstBadByte = lockStart - subBlockSize
@@ -163,93 +149,63 @@ class Producer {
 
         return null
     }
-}
 
-private fun buildProtoRecordAtIndex(index: Int, record: PuroRecord, protoRecords: Array<SerialisedPuroRecord?>): Int {
-    val (serialisedRecord, recordLength) = record.toSerialised()
-    protoRecords[index] = serialisedRecord
-    return recordLength
-}
-
-// TODO: See `createRecordBuffer` logic in test Utils
-private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
-    val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
-    val blockBodySize =// need to shift over 1 for starting record
-        puroRecords.mapIndexed { index, record -> buildProtoRecordAtIndex(index + 1, record, protoRecords) }
-            .sum()
-
-    val subBlockLength = BLOCK_START_RECORD_SIZE + blockBodySize
-    val startBlockValue = ByteBuffer.allocate(5).put(0x00).putInt(subBlockLength).rewind()
-    buildProtoRecordAtIndex(
-        0,
-        PuroRecord(ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), startBlockValue),
-        protoRecords
-    )
-
-    val endBlockValue = ByteBuffer.allocate(4)
-    endBlockValue.putInt(subBlockLength)
-
-    val endBlockRecordSize = buildProtoRecordAtIndex(
-        puroRecords.size + 1,
-        PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
-        protoRecords
-    )
-    val crcs = arrayListOf<Byte>()
-    val batchBuffer = ByteBuffer.allocate(subBlockLength + endBlockRecordSize)
-
-    protoRecords.forEach { record: SerialisedPuroRecord? ->
-        val (messageCrc,
-            encodedSubrecordLength,
-            encodedTopicLength,
-            encodedTopic,
-            encodedKeyLength,
-            key,
-            value) = record!!
-        crcs.add(messageCrc)
-        batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
-            .put(encodedKeyLength).put(key).put(value)
+    private fun buildProtoRecordAtIndex(
+        index: Int,
+        record: PuroRecord,
+        protoRecords: Array<SerialisedPuroRecord?>
+    ): Int {
+        val (serialisedRecord, recordLength) = record.toSerialised()
+        protoRecords[index] = serialisedRecord
+        return recordLength
     }
-    crcs.forEach { println("internal: ${it.toString()}") }
-    return batchBuffer.rewind()
-}
 
-// This function is a little FP-heretical but I have at least partially a good reason for it; even if the `recordLength`
-//is rather awkward
-fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
-    val (topic, key, value) = this
-    rewindAll(key, value)
+    // TODO: See `createRecordBuffer` logic in test Utils
+    private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
+        val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
+        val blockBodySize =// need to shift over 1 for starting record
+            puroRecords.mapIndexed { index, record -> buildProtoRecordAtIndex(index + 1, record, protoRecords) }
+                .sum()
 
-    // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
-    val topicLength = topic.size
-    val encodedTopicLength = topicLength.toVlqEncoding()
-    val keyLength = key.capacity()
-    val encodedKeyLength = keyLength.toVlqEncoding()
-    val valueLength = value.capacity()
+        val subBlockLength = BLOCK_START_RECORD_SIZE + blockBodySize
+        val startBlockValue = ByteBuffer.allocate(5).put(0x00).putInt(subBlockLength).rewind()
+        buildProtoRecordAtIndex(
+            0,
+            PuroRecord(ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), startBlockValue),
+            protoRecords
+        )
 
-    val subrecordLength =
-        encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
-    val encodedSubrecordLength = subrecordLength.toVlqEncoding()
+        val endBlockValue = ByteBuffer.allocate(4)
+        endBlockValue.putInt(subBlockLength)
 
-    // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
-    val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
+        val endBlockRecordSize = buildProtoRecordAtIndex(
+            puroRecords.size + 1,
+            PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
+            protoRecords
+        )
+        // Remove me at some point
+        val crcs = arrayListOf<Byte>()
+        val batchBuffer = ByteBuffer.allocate(subBlockLength + endBlockRecordSize)
 
-    val messageCrc = getMessageCrc(
-        encodedSubrecordLength = encodedSubrecordLength,
-        encodedTopicLength = encodedTopicLength,
-        topic = topic,
-        encodedKeyLength = encodedKeyLength,
-        key = key,
-        value = value
-    )
-
-    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
-    return SerialisedPuroRecord(
-        messageCrc,
-        encodedSubrecordLength,
-        encodedTopicLength,
-        topic,
-        encodedKeyLength,
-        key,
-        value
-    ) to recordLength
+        protoRecords.forEach { record: SerialisedPuroRecord? ->
+            val (messageCrc,
+                encodedSubrecordLength,
+                encodedTopicLength,
+                encodedTopic,
+                encodedKeyLength,
+                key,
+                value) = record!!
+            crcs.add(messageCrc)
+            batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
+                .put(encodedKeyLength).put(key).put(value)
+        }
+        crcs.forEach { logger?.debug("Record CRC: $it") }
+        return batchBuffer.rewind()
+    }
+    fun fullSegmentIntegrityCheck(channel: FileChannel) {
+        // 1) acquire read lock
+        // 2) Check signal bit of block-start message
+        // 3) Confirm consistent block-end message
+        // Repeat steps 2 and 3 until
+    }
 }

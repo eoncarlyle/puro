@@ -1,6 +1,7 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
+import org.slf4j.event.Level
 import org.slf4j.helpers.NOPLogger
 import java.nio.channels.FileChannel
 import java.nio.file.Path
@@ -134,9 +135,10 @@ fun secondaryProducerRead() {
     val puroDirectory = Path("/tmp/puro")
     Path.of("/tmp/puro/stream0.puro").createFile()
 
-    val firstProducer = Producer(puroDirectory, 8192)
+    val firstProducer = Producer(puroDirectory, 8192, logger = logger)
     firstProducer.send(
         listOf(
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "FirstSmallValue".toByteBuffer()),
             PuroRecord(
                 "testTopic", "testKey".toByteBuffer(), """
             In future it shall be lawful for any man to leave and return to our kingdom unharmed and without fear, by 
@@ -149,9 +151,9 @@ fun secondaryProducerRead() {
         )
     )
 
-    val secondProducer = Producer(puroDirectory, 8192)
+    val secondProducer = Producer(puroDirectory, 8192, logger = logger)
 
-    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = logger) { record, internalLogger ->
+    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = NOPLogger.NOP_LOGGER) { record, internalLogger ->
         internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
     }
 
@@ -167,7 +169,7 @@ fun secondaryProducerRead() {
 
     secondProducer.send(
         listOf(
-            PuroRecord("testTopic", "testKey".toByteBuffer(), "TrueProducerSmallValue".toByteBuffer()),
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "SecondSmallValue".toByteBuffer()),
             PuroRecord("testTopic", "testKey".toByteBuffer(), secondValue.toByteBuffer())
         )
     )

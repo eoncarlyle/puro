@@ -15,69 +15,10 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
-sealed class ConsumerStartPoint {
-    data object StreamBeginning : ConsumerStartPoint()
-    data object Latest : ConsumerStartPoint()
-}
-
-sealed class ConsumerError {
-    data object FailingCrc : ConsumerError()
-    data object NoRemainingBuffer : ConsumerError()
-    data object HardTransitionFailure : ConsumerError()
-}
-
-private sealed class ReadTombstoneStatus {
-    data object NotTombstoned : ReadTombstoneStatus()
-    data object RecordsAfterTombstone : ReadTombstoneStatus()
-    data object StandardTombstone : ReadTombstoneStatus()
-}
-
-private data class StandardRead(
-    val finalConsumerOffset: Long,
-    val fetchedRecords: List<PuroRecord>,
-    val abnormalOffsetWindow: Pair<Long, Long>?,
-    val abnormality: GetRecordsAbnormality?
-)
-
-private sealed class FetchSuccess() {
-    data object CleanFetch : FetchSuccess()
-    data object CleanSegmentClosure : FetchSuccess()
-    data object RecordsAfterTombstone : FetchSuccess()
-}
-
-typealias ConsumerResult<R> = Either<ConsumerError, R>
-
-fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
-    if (!recordBuffer.hasRemaining()) {
-        return left(ConsumerError.NoRemainingBuffer)
-    }
-    val start = recordBuffer.position()
-    val expectedCrc = recordBuffer.get()
-    val (encodedSubrecordLength, _, crc1) = recordBuffer.fromVlq()
-    val (topicLength, topicLengthByteCount, crc2) = recordBuffer.fromVlq()
-    val (topic, crc3) = recordBuffer.getArraySlice(topicLength)
-    val (keyLength, keyLengthByteCount, crc4) = recordBuffer.fromVlq()
-    val (key, crc5) = recordBuffer.getBufferSlice(keyLength)
-    val (value, crc6) = recordBuffer.getBufferSlice(encodedSubrecordLength - topicLengthByteCount - topicLength - keyLengthByteCount - keyLength)
-
-    val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
-
-    return if (expectedCrc == actualCrc) {
-        right(PuroRecord(topic, key, value) to (recordBuffer.position() - start))
-    } else left(ConsumerError.FailingCrc)
-}
-
-fun isRelevantTopic(
-    topic: ByteArray,
-    subscribedTopics: List<ByteArray>,
-    otherIncludedTopics: List<ControlTopic>,
-): Boolean =
-    subscribedTopics.any { it.contentEquals(topic) } || (otherIncludedTopics.any { it.value.contentEquals(topic) })
-
 class Consumer(
     val streamDirectory: Path,
     serialisedTopicNames: List<String>,
-    val logger: Logger,
+    private val logger: Logger,
     val readBufferSize: Int = 8192,
     val startPoint: ConsumerStartPoint = ConsumerStartPoint.Latest,
     val onMessage: (PuroRecord, Logger) -> Unit,

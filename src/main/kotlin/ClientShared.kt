@@ -9,55 +9,6 @@ import kotlin.experimental.and
 
 // This is for common utilities between consumers and producers for signal bit
 // consumers and producers
-
-sealed class GetRecordsAbnormality {
-    data object Truncation : GetRecordsAbnormality()
-    data object RecordsAfterTombstone : GetRecordsAbnormality()
-    data object StandardTombstone : GetRecordsAbnormality()
-    data object LowSignalBit : GetRecordsAbnormality()
-}
-
-
-sealed class GetRecordsResult {
-    data class Success(val records: ArrayList<PuroRecord>, val offset: Long) : GetRecordsResult()
-    data class StandardAbnormality(
-        val records: ArrayList<PuroRecord>,
-        val offset: Long,
-        val abnormality: GetRecordsAbnormality
-    ) : GetRecordsResult()
-
-    data class LargeRecordStart(
-        val partialReadOffset: Long, // This does not represent finished reads
-        val largeRecordFragment: ByteBuffer,
-        val targetBytes: Long
-    ) : GetRecordsResult()
-}
-
-sealed class GetLargeSignalRecordResult(open val byteBuffer: ByteBuffer) {
-    data class LargeRecordContinuation(override val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult(byteBuffer)
-    data class LargeRecordEnd(override val byteBuffer: ByteBuffer) : GetLargeSignalRecordResult(byteBuffer)
-}
-
-sealed class DeserialiseLargeReadResult {
-    data object IrrelevantTopic : DeserialiseLargeReadResult()
-
-    data object CrcFailure : DeserialiseLargeReadResult()
-
-    data class Standard(val puroRecord: PuroRecord) : DeserialiseLargeReadResult()
-
-    data class SegmentTombstone(val puroRecord: PuroRecord) : DeserialiseLargeReadResult()
-}
-
-sealed class ReadState {
-    data object Standard : ReadState()
-    data class Large(
-        val largeRecordFragments: ArrayList<ByteBuffer>,
-        var targetBytes: Long
-    ) : ReadState()
-}
-
-private data class MultiFragmentVlq(val result: Int, val byteCount: Int, val crc8: Byte, val fragmentIndex: Int)
-
 fun rewindAll(bytes: List<ByteBuffer>) = bytes.forEach { it.rewind() }
 fun rewindAll(vararg bytes: ByteBuffer) = bytes.forEach { it.rewind() }
 fun getMessageCrc(
@@ -391,9 +342,29 @@ fun getMaybeSignalRecord(
     return maybeBlockEndRecord
 }
 
-fun fullSegmentIntegrityCheck(channel: FileChannel) {
-    // 1) acquire read lock
-    // 2) Check signal bit of block-start message
-    // 3) Confirm consistent block-end message
-    // Repeat steps 2 and 3 until
+fun isRelevantTopic(
+    topic: ByteArray,
+    subscribedTopics: List<ByteArray>,
+    otherIncludedTopics: List<ControlTopic>,
+): Boolean =
+    subscribedTopics.any { it.contentEquals(topic) } || (otherIncludedTopics.any { it.value.contentEquals(topic) })
+
+fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
+    if (!recordBuffer.hasRemaining()) {
+        return left(ConsumerError.NoRemainingBuffer)
+    }
+    val start = recordBuffer.position()
+    val expectedCrc = recordBuffer.get()
+    val (encodedSubrecordLength, _, crc1) = recordBuffer.fromVlq()
+    val (topicLength, topicLengthByteCount, crc2) = recordBuffer.fromVlq()
+    val (topic, crc3) = recordBuffer.getArraySlice(topicLength)
+    val (keyLength, keyLengthByteCount, crc4) = recordBuffer.fromVlq()
+    val (key, crc5) = recordBuffer.getBufferSlice(keyLength)
+    val (value, crc6) = recordBuffer.getBufferSlice(encodedSubrecordLength - topicLengthByteCount - topicLength - keyLengthByteCount - keyLength)
+
+    val actualCrc = updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
+
+    return if (expectedCrc == actualCrc) {
+        right(PuroRecord(topic, key, value) to (recordBuffer.position() - start))
+    } else left(ConsumerError.FailingCrc)
 }

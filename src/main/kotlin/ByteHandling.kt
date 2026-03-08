@@ -100,3 +100,44 @@ fun ByteBuffer.getArraySlice(length: Int): Pair<ByteArray, Byte> {
 
 fun String.toByteBuffer(): ByteBuffer = ByteBuffer.wrap(this.toByteArray())
 fun ByteArray.toByteBuffer(): ByteBuffer = ByteBuffer.wrap(this)
+
+// This function is a little FP-heretical but I have at least partially a good reason for it; even if the `recordLength`
+//is rather awkward
+fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
+    val (topic, key, value) = this
+    rewindAll(key, value)
+
+    // Should have the lengths, CRCs ready to go - should hold the lock for as short a time as possible
+    val topicLength = topic.size
+    val encodedTopicLength = topicLength.toVlqEncoding()
+    val keyLength = key.capacity()
+    val encodedKeyLength = keyLength.toVlqEncoding()
+    val valueLength = value.capacity()
+
+    val subrecordLength =
+        encodedTopicLength.capacity() + topicLength + encodedKeyLength.capacity() + keyLength + valueLength
+    val encodedSubrecordLength = subrecordLength.toVlqEncoding()
+
+    // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
+    val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
+
+    val messageCrc = getMessageCrc(
+        encodedSubrecordLength = encodedSubrecordLength,
+        encodedTopicLength = encodedTopicLength,
+        topic = topic,
+        encodedKeyLength = encodedKeyLength,
+        key = key,
+        value = value
+    )
+
+    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
+    return SerialisedPuroRecord(
+        messageCrc,
+        encodedSubrecordLength,
+        encodedTopicLength,
+        topic,
+        encodedKeyLength,
+        key,
+        value
+    ) to recordLength
+}

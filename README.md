@@ -22,7 +22,7 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [x] Consumer class checking signal bits
 - [x] Use the `ReadRecords`  data structure
 - [ ] Producer total segment iteration
-  - [ ] Change block start message to include block length 
+  - [x] Change block start message to include block length 
   - [ ] Finish `fullSegmentIntegrityCheck`
   - [ ] Producer state machine (`ProducerSegmentState`)
   - [ ] Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state tracking
