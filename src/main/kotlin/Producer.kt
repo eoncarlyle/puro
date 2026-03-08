@@ -77,7 +77,8 @@ class Producer {
                 ).toSerialised()
 
                 channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
-                channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 1)
+                println("first Crc: ${signalRecord.first.messageCrc.toString()}")
+                channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 5)
             }
         }
     }
@@ -178,7 +179,6 @@ private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logge
             .sum()
 
     val subBlockLength = BLOCK_START_RECORD_SIZE + blockBodySize
-    // If this isn't exactly `BLOCK_START_RECORD_SIZE`, there is a huge problem
     val startBlockValue = ByteBuffer.allocate(5).put(0x00).putInt(subBlockLength).rewind()
     buildProtoRecordAtIndex(
         0,
@@ -194,7 +194,7 @@ private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logge
         PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
         protoRecords
     )
-
+    val crcs = arrayListOf<Byte>()
     val batchBuffer = ByteBuffer.allocate(subBlockLength + endBlockRecordSize)
 
     protoRecords.forEach { record: SerialisedPuroRecord? ->
@@ -205,10 +205,11 @@ private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logge
             encodedKeyLength,
             key,
             value) = record!!
-
+        crcs.add(messageCrc)
         batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
             .put(encodedKeyLength).put(key).put(value)
     }
+    crcs.forEach { println("internal: ${it.toString()}") }
     return batchBuffer.rewind()
 }
 

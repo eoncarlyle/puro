@@ -1,6 +1,7 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
+import org.slf4j.helpers.NOPLogger
 import java.nio.channels.FileChannel
 import java.nio.file.Path
 import java.util.concurrent.Semaphore
@@ -174,8 +175,35 @@ fun secondaryProducerRead() {
     consumer.run()
 }
 
+fun thirdProducerRead() {
+    val logger = LoggerFactory.getLogger("MainKt")
+    Path("/tmp/puro/stream0.puro").deleteIfExists()
+    val puroDirectory = Path("/tmp/puro")
+    Path.of("/tmp/puro/stream0.puro").createFile()
+
+    val firstProducer = Producer(puroDirectory, 8192, logger = NOPLogger.NOP_LOGGER)
+    firstProducer.send(
+        listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), "First".toByteBuffer()))
+    )
+
+    val secondProducer = Producer(puroDirectory, 8192, logger = NOPLogger.NOP_LOGGER)
+
+    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = logger) { record, internalLogger ->
+        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    }
+
+    consumer.run()
+    Thread.sleep(100)
+    secondProducer.send(
+        listOf(
+            PuroRecord("testTopic", "testKey".toByteBuffer(), "Second".toByteBuffer()),
+        )
+    )
+}
+
 fun main() {
     //smallThenLargeRead()
     //reallyLargeRead()
     secondaryProducerRead()
+    //thirdProducerRead()
 }

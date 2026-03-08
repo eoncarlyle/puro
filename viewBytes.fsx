@@ -1,7 +1,10 @@
 open System.IO
 
+let path = "/tmp/puro/stream0.puro"
+let bytes = File.ReadAllBytes(path)
+
 let breaks () =
-    File.ReadAllBytes("stream0.puro")
+    bytes
     |> Array.map (fun b -> if b < 128uy then int b else int b - 256)
     |> Array.chunkBySize 40
     |> Array.map (fun a -> a |> Array.map string |> String.concat ", ")
@@ -9,7 +12,7 @@ let breaks () =
     |> ignore
 
 let singleLine () =
-    File.ReadAllBytes("stream0.puro")
+    bytes
     |> Array.map (fun b -> if b < 128uy then int b else int b - 256)
     |> Array.map string
     |> String.concat ", "
@@ -17,7 +20,6 @@ let singleLine () =
     |> ignore
 
 let rangeWithOffsets (startByte: int) (endByte: int) =
-    let bytes = File.ReadAllBytes("stream0.puro")
     let relevantBytes = bytes.[startByte..endByte]
 
     relevantBytes
