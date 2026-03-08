@@ -91,6 +91,31 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-03-08
+
+It has been a little bit since I have slung bits around, so using `thirdProducerRead` to figure out what I need to do
+for `fullSegmentIntegrityCheck`
+
+```text
+[main] INFO MainKt - Record CRC: 89
+[main] INFO MainKt - Record CRC: 118
+[main] INFO MainKt - Block Start Crc: 89
+
+[main] INFO MainKt - Record CRC: -31
+[main] INFO MainKt - Record CRC: -40
+[main] INFO MainKt - Confirmed segment integrity
+[main] INFO MainKt - Block Start Crc: 89
+```
+
+- The block start message has a high signal bit and the integer 35
+- 0 (segment start) + 35 = 35, with a value of 118: this is the block end message, and has a value of 35
+- 35 + 9 (block end message size) take you to offset 44 and value 89, which is the next block start message
+- This has a high signal bit and an integer value of 36
+- 44 + 46 = 80, and this is the block end message
+- The block end message is also 36
+
+Hit a 'I don't think this ever work' bug with a bad comparison in `Segments.getHighestSegmentOrder`
+
 ### 2026-03-07
 Q) Why do we need to traverse down the entire segment on producer startup?
 A) While an end-of-block message is what we expect for the last bytes of a message, we could get very unlucky and an

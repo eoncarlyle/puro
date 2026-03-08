@@ -3,6 +3,7 @@ import org.slf4j.helpers.NOPLogger
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.math.min
@@ -18,7 +19,7 @@ class Producer {
     private val readBuffer: ByteBuffer
     private var logger: Logger = NOPLogger.NOP_LOGGER
     var times = 0;
-    var producerState = ProducerSegmentState.INIT;
+    var producerState: ProducerSegmentState = ProducerSegmentState.Init
 
     companion object {
         // This should be configurable?
@@ -38,6 +39,37 @@ class Producer {
         this.readBuffer = ByteBuffer.allocate(readBufferSize)
         this.logger = logger
         this.currentSegmentOrder = getHighestSegmentOrder(streamDirectory, readBuffer, retryDelay, logger)
+
+        val initialIntegrity = getInitialSegmentIntegrity()
+        this.producerState = when (initialIntegrity) {
+            is Either.Left -> throw RuntimeException("!!") //ProducerSegmentState.Cleanup(initialIntegrity.value)
+            is Either.Right -> ProducerSegmentState.Ready(initialIntegrity.value)
+        }
+    }
+
+    // See Consumer#withConsumerLock
+    private fun getInitialSegmentIntegrity(): Either<Long, Long> {
+        if (currentSegmentOrder == -1) {
+            return right(0)
+        }
+
+        val path = getSegmentPath(streamDirectory, currentSegmentOrder)
+            ?: throw IllegalStateException("Segment $currentSegmentOrder deleted before use")
+        var lock: FileLock? = null
+        var knownSegmentSize: Long? = null
+        //TODO segment rollover awareness
+        FileChannel.open(path, StandardOpenOption.READ).use { channel ->
+            do {
+                try {
+                    knownSegmentSize = channel.size()
+                    lock = channel.tryLock(offset.toLong(), knownSegmentSize!!, true) //Saftey: single thread modify
+                } catch (_: OverlappingFileLockException) {
+                    logger.warn("Hit OverlappingFileLockException, should only happen when testing mutliple clients in same JVM")
+                    Thread.sleep(retryDelay)
+                }
+            } while (lock == null)
+            return getSegmentIntegrity(channel, knownSegmentSize!!, offset.toLong()) //Saftey: see  above
+        }
     }
 
     private fun getStepCount(puroRecords: List<PuroRecord>) = if (puroRecords.size % maximumWriteBatchSize == 0) {
@@ -63,7 +95,7 @@ class Producer {
                 ).toSerialised()
 
                 channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
-                logger.debug("Block Start Crc: ${signalRecord.first.messageCrc.toString()}")
+                logger.info("Block Start CRC/Position: ${signalRecord.first.messageCrc}/$initialPosition")
                 channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 5)
             }
         }
@@ -132,7 +164,7 @@ class Producer {
 
         when (maybeBlockStartRecord) {
             // Load bearing to confirm that a standard abonormality will be returned TODO tests to establish this
-            is GetRecordsResult.Success -> logger.debug("Confirmed segment integrity")
+            is GetRecordsResult.Success -> logger.info("Confirmed segment integrity")
             is GetRecordsResult.StandardAbnormality -> {
                 if (maybeBlockStartRecord.abnormality == GetRecordsAbnormality.LowSignalBit) {
                     val firstBadByte = lockStart - subBlockSize
@@ -183,7 +215,7 @@ class Producer {
             PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
             protoRecords
         )
-        // Remove me at some point
+        //TODO Remove me at some point this is just for logging
         val crcs = arrayListOf<Byte>()
         val batchBuffer = ByteBuffer.allocate(subBlockLength + endBlockRecordSize)
 
@@ -199,13 +231,91 @@ class Producer {
             batchBuffer.put(messageCrc).put(encodedSubrecordLength).put(encodedTopicLength).put(encodedTopic)
                 .put(encodedKeyLength).put(key).put(value)
         }
-        crcs.forEach { logger?.debug("Record CRC: $it") }
+        crcs.slice(1..<crcs.size).forEach { logger?.info("Record CRC: $it") }
         return batchBuffer.rewind()
     }
-    fun fullSegmentIntegrityCheck(channel: FileChannel) {
-        // 1) acquire read lock
-        // 2) Check signal bit of block-start message
-        // 3) Confirm consistent block-end message
-        // Repeat steps 2 and 3 until
+
+    private fun getSegmentIntegrity(
+        channel: FileChannel,
+        fileSizeOnceLockAcquired: Long,
+        initialOffset: Long
+    ): Either<Long, Long> {
+        var currentOffset = initialOffset
+        var currentBlockStart = currentOffset
+        var blockStartSubblockSize = 0
+        var blockEndSubblockSize = 0
+
+        while (currentOffset < fileSizeOnceLockAcquired) {
+            readBuffer.rewind()
+            readBuffer.limit(BLOCK_START_RECORD_SIZE)
+            currentBlockStart = currentOffset
+            if ((currentOffset + BLOCK_START_RECORD_SIZE) > fileSizeOnceLockAcquired) {
+                break
+            }
+
+            channel.read(readBuffer, currentOffset)
+            val maybeBlockStartRecord = getRecords(
+                readBuffer,
+                0,
+                BLOCK_START_RECORD_SIZE.toLong(),
+                listOf(ControlTopic.BLOCK_START.value),
+                true
+            )
+
+            when (maybeBlockStartRecord) {
+                is GetRecordsResult.Success -> {
+                    if (maybeBlockStartRecord.records.size == 1) {
+                        val signalByte = maybeBlockStartRecord.records.first.value.get()
+                        if (signalByte != 1.toByte()) {
+                            break
+                        }
+                        blockStartSubblockSize = maybeBlockStartRecord.records.first.value.getInt()
+                        currentOffset += blockStartSubblockSize
+                    } else break
+                }
+
+                else -> break
+            }
+
+            readBuffer.rewind()
+            readBuffer.limit(BLOCK_END_RECORD_SIZE)
+
+            if ((currentOffset + BLOCK_END_RECORD_SIZE) > fileSizeOnceLockAcquired) {
+                break
+            }
+
+            channel.read(readBuffer, currentOffset)
+            val maybeBlockEndRecord = getRecords(
+                readBuffer,
+                0,
+                BLOCK_END_RECORD_SIZE.toLong(),
+                listOf(ControlTopic.BLOCK_END.value),
+                true
+            )
+
+            when (maybeBlockEndRecord) {
+                is GetRecordsResult.Success -> {
+                    if (maybeBlockStartRecord.records.size == 1) {
+                        blockEndSubblockSize = maybeBlockEndRecord.records.first.value.getInt()
+                        if (blockEndSubblockSize != blockStartSubblockSize) {
+                            break
+                        }
+                        currentBlockStart = currentOffset
+                        currentOffset += blockEndSubblockSize
+                    } else break
+                }
+
+                else -> break
+            }
+
+            if (currentOffset == fileSizeOnceLockAcquired - BLOCK_END_RECORD_SIZE) {
+                return right(fileSizeOnceLockAcquired)
+            } else if (currentOffset > fileSizeOnceLockAcquired - BLOCK_END_RECORD_SIZE) {
+                break
+            }
+        }
+        return if (currentOffset != initialOffset) {
+            left(currentBlockStart)
+        } else right(currentOffset)
     }
 }

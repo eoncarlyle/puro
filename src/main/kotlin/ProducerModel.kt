@@ -10,6 +10,8 @@ data class SerialisedPuroRecord(
     val value: ByteBuffer
 )
 
-enum class ProducerSegmentState {
-    INIT, READY, CLEANUP
+sealed class ProducerSegmentState {
+    data object Init : ProducerSegmentState()
+    data class Ready(val knownSafeOffset: Long): ProducerSegmentState()
+    data class Cleanup(val cleanupStartOffset: Long) : ProducerSegmentState()
 }

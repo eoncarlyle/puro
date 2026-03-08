@@ -9,6 +9,7 @@ import java.util.concurrent.Semaphore
 import kotlin.io.path.Path
 import kotlin.io.path.createFile
 import kotlin.io.path.deleteIfExists
+import kotlin.math.log
 
 class DirectoryWatchingUtility(directoryToWatch: Path?, onEvent: (DirectoryChangeEvent) -> Unit) {
     val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
@@ -178,19 +179,27 @@ fun secondaryProducerRead() {
 }
 
 fun thirdProducerRead() {
+    /* Block start message
+    --------------------------------------------------------
+    VAL:   89    8    1    2    0    1    0    0    0   35
+    GLB:    0    1    2    3    4    5    6    7    8    9
+    REL:    0    1    2    3    4    5    6    7    8    9
+    --------------------------------------------------------
+     */
+
     val logger = LoggerFactory.getLogger("MainKt")
     Path("/tmp/puro/stream0.puro").deleteIfExists()
     val puroDirectory = Path("/tmp/puro")
     Path.of("/tmp/puro/stream0.puro").createFile()
 
-    val firstProducer = Producer(puroDirectory, 8192, logger = NOPLogger.NOP_LOGGER)
+    val firstProducer = Producer(puroDirectory, 8192, logger = logger)
     firstProducer.send(
         listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), "First".toByteBuffer()))
     )
 
-    val secondProducer = Producer(puroDirectory, 8192, logger = NOPLogger.NOP_LOGGER)
+    val secondProducer = Producer(puroDirectory, 8192, logger = logger)
 
-    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = logger) { record, internalLogger ->
+    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = NOPLogger.NOP_LOGGER) { record, internalLogger ->
         internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
     }
 
@@ -206,6 +215,6 @@ fun thirdProducerRead() {
 fun main() {
     //smallThenLargeRead()
     //reallyLargeRead()
-    secondaryProducerRead()
-    //thirdProducerRead()
+    //secondaryProducerRead()
+    thirdProducerRead()
 }

@@ -293,7 +293,7 @@ fun <T> withFileLockDimensions(
 ): T {
     val initialFileSize = channel.size()
     var lock: FileLock? = null
-    val blockEndOffset = (initialFileSize - BLOCK_END_RECORD_SIZE + 1).coerceAtLeast(0)
+    val blockEndOffset = (initialFileSize - BLOCK_END_RECORD_SIZE).coerceAtLeast(0)
 
     do {
         try {

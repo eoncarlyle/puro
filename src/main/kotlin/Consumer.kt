@@ -464,6 +464,7 @@ class Consumer(
     }
 
     // Consumer lock block: returns `false` if end-of-fetch abnormality
+    // See Producer#initialiseState
     private fun <T> withConsumerLock(position: Long, size: Long, block: (FileChannel) -> T): T {
         getConsumedSegmentChannel().use { channel ->
             var lock: FileLock? = null
