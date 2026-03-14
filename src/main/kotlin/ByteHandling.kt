@@ -127,16 +127,6 @@ fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
     // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
     val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
 
-    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
-    val a = listOf(
-        crc8(encodedSubrecordLength),
-        crc8(encodedTopicLength),
-        crc8(topic),
-        crc8(encodedKeyLength),
-        crc8(key),
-        crc8(value)
-    )
-    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
     val messageCrc = getMessageCrc(
         encodedSubrecordLength = encodedSubrecordLength,
         encodedTopicLength = encodedTopicLength,

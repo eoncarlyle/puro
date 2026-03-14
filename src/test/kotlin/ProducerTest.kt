@@ -170,6 +170,10 @@ class ProducerTest {
         }
     }
 
+    /*
+    The point of this test is to ensure that the integrity check is run (albeit on an almost trivial case). Ideally I'd
+    do something to prove that the integrity check was run. I don't want to do this though.
+     */
     @Test
     fun thirdProducerRead() {
         withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->

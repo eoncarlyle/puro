@@ -92,16 +92,11 @@ class Producer {
             this.withProducerLock { channel ->
                 val initialPosition = channel.position()
                 channel.write(serialiseRecordBatch)
+                serialiseRecordBatch.rewind()
 
-                startRecordBuffer.put(0, serialiseRecordBatch, 0, BLOCK_END_RECORD_SIZE)
+                startRecordBuffer.put(0, serialiseRecordBatch, 0, BLOCK_START_RECORD_SIZE)
                 startRecordBuffer.put(BLOCK_START_RECORD_SIZE - 5, 0x01) // Setting signal bit high
                 val finalBlockStartRecordCrc8 = getCrc8(startRecordBuffer)
-
-                val finalRecord = ByteBuffer.wrap(ByteArray(BLOCK_START_RECORD_SIZE))
-                finalRecord.put(finalBlockStartRecordCrc8)
-                finalRecord.put(startRecordBuffer)
-                finalRecord.rewind()
-                getRecord(finalRecord)
 
                 channel.write(ByteBuffer.wrap(byteArrayOf(finalBlockStartRecordCrc8)), initialPosition)
                 logger.info("Block Start CRC/Position: ${finalBlockStartRecordCrc8}/$initialPosition")
@@ -313,7 +308,7 @@ class Producer {
                             break
                         }
                         currentBlockStart = currentOffset
-                        currentOffset += blockEndSubblockSize
+                        //currentOffset += BLOCK_END_RECORD_SIZE
                     } else break
                 }
 

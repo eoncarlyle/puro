@@ -1,7 +1,6 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.LoggerFactory
-import org.slf4j.event.Level
 import org.slf4j.helpers.NOPLogger
 import java.nio.channels.FileChannel
 import java.nio.file.Path
@@ -9,7 +8,6 @@ import java.util.concurrent.Semaphore
 import kotlin.io.path.Path
 import kotlin.io.path.createFile
 import kotlin.io.path.deleteIfExists
-import kotlin.math.log
 
 class DirectoryWatchingUtility(directoryToWatch: Path?, onEvent: (DirectoryChangeEvent) -> Unit) {
     val watcher: DirectoryWatcher? = DirectoryWatcher.builder()
