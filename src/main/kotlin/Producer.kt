@@ -21,6 +21,8 @@ class Producer {
     var times = 0;
     var producerState: ProducerSegmentState = ProducerSegmentState.Init
 
+    private var startRecordArray = ByteArray(BLOCK_START_RECORD_SIZE - 1)
+
     companion object {
         // This should be configurable?
         private val retryDelay = 10.milliseconds.toJavaDuration()
@@ -83,19 +85,26 @@ class Producer {
         for (step in 0..<stepCount) {
             val indices =
                 step * this.maximumWriteBatchSize..<min((step + 1) * this.maximumWriteBatchSize, puroRecords.size)
-            val serialiseRecordBatch = getSerialiseRecordBatch(puroRecords.slice(indices), logger)
+            val serialiseRecordBatch = getSerialiseRecordBatch(
+                puroRecords.slice(indices),
+                logger
+            )
             this.withProducerLock { channel ->
                 val initialPosition = channel.position()
                 channel.write(serialiseRecordBatch)
 
-                val signalRecord = PuroRecord(
-                    ControlTopic.BLOCK_START.value, ByteBuffer.wrap(byteArrayOf()), ByteBuffer.wrap(
-                        byteArrayOf(0x01)
-                    )
-                ).toSerialised()
+                serialiseRecordBatch.rewind().get(1, startRecordArray)
+                startRecordArray[BLOCK_START_RECORD_SIZE - 6] = 0x01
+                val finalBlockStartRecordCrc8 = crc8(startRecordArray)
 
-                channel.write(ByteBuffer.wrap(byteArrayOf(signalRecord.first.messageCrc)), initialPosition)
-                logger.info("Block Start CRC/Position: ${signalRecord.first.messageCrc}/$initialPosition")
+                val finalRecord = ByteBuffer.wrap(ByteArray(BLOCK_START_RECORD_SIZE))
+                finalRecord.put(finalBlockStartRecordCrc8)
+                finalRecord.put(startRecordArray)
+                finalRecord.rewind()
+                getRecord(finalRecord)
+
+                channel.write(ByteBuffer.wrap(byteArrayOf(finalBlockStartRecordCrc8)), initialPosition)
+                logger.info("Block Start CRC/Position: ${finalBlockStartRecordCrc8}/$initialPosition")
                 channel.write(ByteBuffer.wrap(byteArrayOf(0x01)), initialPosition + BLOCK_START_RECORD_SIZE - 5)
             }
         }
@@ -193,7 +202,10 @@ class Producer {
     }
 
     // TODO: See `createRecordBuffer` logic in test Utils
-    private fun getSerialiseRecordBatch(puroRecords: List<PuroRecord>, logger: Logger?): ByteBuffer {
+    private fun getSerialiseRecordBatch(
+        puroRecords: List<PuroRecord>,
+        logger: Logger?
+    ): ByteBuffer {
         val protoRecords = Array<SerialisedPuroRecord?>(puroRecords.size + 2) { null }
         val blockBodySize =// need to shift over 1 for starting record
             puroRecords.mapIndexed { index, record -> buildProtoRecordAtIndex(index + 1, record, protoRecords) }

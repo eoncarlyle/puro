@@ -91,4 +91,13 @@ class VlqTest {
         assertEquals(expected, actual.first)
         assertEquals(0, buffer.remaining())
     }
+
+    /*
+    @Test
+    fun `Concerning VLQ test`() {
+        val a = crc8(byteArrayOf(8,1,2,0,1,0,0,0,35))
+        val b = updateCrc8List(-71, 49, 98, 0, 0, 6)
+        assertEquals(a, b)
+    }
+     */
 }

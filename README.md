@@ -94,6 +94,14 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-03-14
+
+I have lost some faith in my CRC calculation. The serialised block start message of focus in the current commit is
+`$crc, 8, 1, 2, 0, 1, 0, 0, 0, 35`. Referencing the message format this is all pretty explainable; the high order 
+bit on the value is a high signal bit. The CRC values of the non-zero fields are -71, 49, 98, and 6. But 
+`crc8(byteArrayOf(8,1,2,0,1,0,0,0,35))` is not equal to `updateCrc8List(-71, 49, 98, 0, 0, 6)` which is both concerning
+and, for the implementation I'm currently working on, annoying.
+
 ### 2026-03-13
 
 `Segments.getHighestSegmentOrder` has a problem: if you get unlucky, a valid segment that just failed at a bad spot 
