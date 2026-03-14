@@ -60,6 +60,7 @@ fun getHighestSegmentOrder(streamDirectory: Path, readBuffer: ByteBuffer, retryD
         .filter { path ->
             return@filter FileChannel.open(path, StandardOpenOption.READ).use { channel ->
                 withFileLockDimensions(channel, retryDelay, logger) { lockStart, _ ->
+                    // While it is easy to say 'what are you doing, thse
                     return@withFileLockDimensions if (lockStart > 0) {
                         readBuffer.clear()
                         val record = getMaybeSignalRecord(

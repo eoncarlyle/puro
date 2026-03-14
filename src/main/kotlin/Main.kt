@@ -197,11 +197,11 @@ fun thirdProducerRead() {
         listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), "First".toByteBuffer()))
     )
 
-    val secondProducer = Producer(puroDirectory, 8192, logger = logger)
-
     val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = NOPLogger.NOP_LOGGER) { record, internalLogger ->
         internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
     }
+
+    val secondProducer = Producer(puroDirectory, 8192, logger = logger)
 
     consumer.run()
     Thread.sleep(100)

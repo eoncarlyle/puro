@@ -1,9 +1,11 @@
+import org.slf4j.LoggerFactory
+import org.slf4j.helpers.NOPLogger
 import kotlin.test.Test
 import java.nio.ByteBuffer
 import java.nio.file.Files
+import java.nio.file.Path
+import kotlin.io.path.*
 import kotlin.test.assertContentEquals
-import kotlin.io.path.readBytes
-import kotlin.io.path.writeBytes
 import kotlin.test.assertEquals
 
 class ProducerTest {
@@ -116,7 +118,8 @@ class ProducerTest {
             )
 
             val completeSegment =
-                this::class.java.classLoader.getResource("multiRunCompleteSegment.puro")?.openStream()?.use { it.readBytes() }!!
+                this::class.java.classLoader.getResource("multiRunCompleteSegment.puro")?.openStream()
+                    ?.use { it.readBytes() }!!
 
             val finalSegment = segmentPath.readBytes()
 
@@ -158,11 +161,44 @@ class ProducerTest {
             )
 
             val completeSegment =
-                this::class.java.classLoader.getResource("overwrittenCompleteSegment.puro")?.openStream()?.use { it.readBytes() }!!
+                this::class.java.classLoader.getResource("overwrittenCompleteSegment.puro")?.openStream()
+                    ?.use { it.readBytes() }!!
 
             val finalSegment = segmentPath.readBytes()
 
             assertContentEquals(completeSegment, finalSegment)
+        }
+    }
+
+    @Test
+    fun thirdProducerRead() {
+        withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
+            /* Block start message
+        --------------------------------------------------------
+        VAL:   89    8    1    2    0    1    0    0    0   35
+        GLB:    0    1    2    3    4    5    6    7    8    9
+        REL:    0    1    2    3    4    5    6    7    8    9
+        --------------------------------------------------------
+         */
+            val firstProducer = Producer(puroDirectory, 8192)
+            firstProducer.send(
+                listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), "First".toByteBuffer()))
+            )
+
+            val consumer =
+                Consumer(puroDirectory, listOf("testTopic"), logger = NOPLogger.NOP_LOGGER) { record, internalLogger ->
+                    internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+                }
+
+            val secondProducer = Producer(puroDirectory, 8192)
+
+            consumer.run()
+            Thread.sleep(100)
+            secondProducer.send(
+                listOf(
+                    PuroRecord("testTopic", "testKey".toByteBuffer(), "Second".toByteBuffer()),
+                )
+            )
         }
     }
 }

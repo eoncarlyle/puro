@@ -1,6 +1,7 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.Logger
+import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -9,8 +10,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.util.concurrent.PriorityBlockingQueue
+import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
@@ -41,7 +43,10 @@ class Consumer(
     private var currentConsumerLocked = false
     private var readState: ReadState = ReadState.Standard
     private var retryDelay = defaultRetryDelay
-    private var changeQueueListenerRunning = AtomicBoolean(true)
+
+    //private var changeQueueListenerRunning = AtomicBoolean(true)
+    private var latestProducerOffset = AtomicLong(0)
+    private var offsetChangeChangeSemaphore = Semaphore(0)
 
     val readBuffer = ByteBuffer.allocate(readBufferSize)
     private var abnormalOffsetWindow: Pair<Long, Long>? = null
@@ -59,12 +64,13 @@ class Consumer(
             })
         }
 
-    private var segmentChangeQueue = PriorityBlockingQueue(queueCapacity, compareConsumerSegmentPair)
+    //private var segmentChangeQueue = PriorityBlockingQueue(queueCapacity, compareConsumerSegmentPair)
     private var subscribedTopics = serialisedTopicNames.map { it.toByteArray() }
 
     fun stopListening() {
         directoryWatcher?.close()
-        changeQueueListenerRunning.set(false)
+        changeQueueListenerThread.interrupt()
+        //changeQueueListenerRunning.set(false)
     }
 
     /*
@@ -89,7 +95,7 @@ class Consumer(
         path
             ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
         // I don't think double events are risked by this, but it's taken care of by the `onConsumedSegmentAppend`
-        segmentChangeQueue.put(ConsumerSegmentEvent(Files.size(path), consumedSegmentOrder))
+        latestProducerOffset.set(Files.size(path))
     }
 
     private val directoryWatcher = DirectoryWatcher.builder()
@@ -110,20 +116,21 @@ class Consumer(
             when (event.eventType()) {
                 DirectoryChangeEvent.EventType.MODIFY -> {
                     if (incomingSegmentOrder == consumedSegmentOrder) {
-                        segmentChangeQueue.offer(
-                            ConsumerSegmentEvent(
-                                Files.size(getConsumedSegmentPath()),
-                                consumedSegmentOrder
-                            )
-                        )
+                        // TODO segment rollover, gotta be careful here
+                        latestProducerOffset.set(Files.size(getConsumedSegmentPath()))
+                        offsetChangeChangeSemaphore.release()
                     } else if (incomingSegmentOrder > consumedSegmentOrder) {
                         val incomingSegment = getSegmentPath(streamDirectory, incomingSegmentOrder)
                         if (incomingSegment == null) {
                             logger.error("Phantom incoming segment of order $incomingSegmentOrder")
                         } else {
-                            segmentChangeQueue.offer(
-                                ConsumerSegmentEvent(Files.size(incomingSegment), incomingSegmentOrder)
-                            )
+                            //Segment rollover TODO: instead of placing this onto the segment change queue, once the segment
+                            // rollover takes place there should be a thread stood up that will update the last offset with the
+                            // current size; the 'natural' offsets that come from an actual producer - maybe a 20 millisecond timeout?
+                            // configurable
+                            // segmentChangeQueue.offer(
+                            //     ConsumerSegmentEvent(Files.size(incomingSegment), incomingSegmentOrder)
+                            // )
                         }
                     } else {
                         logger.warn(
@@ -149,28 +156,37 @@ class Consumer(
         .build()
 
     private val changeQueueListenerThread = Thread {
-        while (changeQueueListenerRunning.get()) {
-            val event = segmentChangeQueue.poll(25, TimeUnit.MICROSECONDS) ?: continue
+        while (true) {
+            try {
+                offsetChangeChangeSemaphore.tryAcquire(1, 25, TimeUnit.MICROSECONDS)
 
-            val (producerOffset, incomingSegmentOrder) = event
-            if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder)) {
-                logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
-            } else if (incomingSegmentOrder == consumedSegmentOrder) {
-                logger.info("Incoming producer offset: $producerOffset")
-                onConsumedSegmentAppend(producerOffset)
-            } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
-                // The priority queue will ensure all records of order _N_ will be received before all records of
-                // order _N+1_
-                val nextSegment = getSegmentPath(streamDirectory, consumedSegmentOrder + 1)
-                if (nextSegment != null) {
-                    consumedSegmentOrder++
-                    currentConsumerLocked = false
-                    onConsumedSegmentAppend(producerOffset)
-                } else {
-                    logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
+                //val (producerOffset, incomingSegmentOrder) = event
+                val incomingProducerOffset = latestProducerOffset.get()
+                val incomingSegmentOrder = getSegmentPath(streamDirectory, incomingProducerOffset.toInt())
+                if (currentConsumerLocked) { //and (incomingSegmentOrder == consumedSegmentOrder)) {
+                    logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
+                } else if (incomingProducerOffset <= consumerOffset) {
+                    //TODO different handling for smaller consumer offsets?
+
+            } else { // if (incomingSegmentOrder == consumedSegmentOrder) {
+                    logger.info("Incoming producer offset: $incomingSegmentOrder")
+                    onConsumedSegmentAppend(incomingProducerOffset)
+                    // } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
+                    //     // The priority queue will ensure all records of order _N_ will be received before all records of
+                    //     // order _N+1_
+                    //     val nextSegment = getSegmentPath(streamDirectory, consumedSegmentOrder + 1)
+                    //     if (nextSegment != null) {
+                    //         consumedSegmentOrder++
+                    //         currentConsumerLocked = false
+                    //         onConsumedSegmentAppend(producerOffset)
+                    //     } else {
+                    //         logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
+                    //     }
+                    // } else {
+                    //     logger.error("Illegal ConsumerSegmentEvent: segment order $incomingSegmentOrder, at lock state $currentConsumerLocked")
                 }
-            } else {
-                logger.error("Illegal ConsumerSegmentEvent: segment order $incomingSegmentOrder, at lock state $currentConsumerLocked")
+            } catch (e: InterruptedException) {
+                break
             }
         }
     }
@@ -193,15 +209,15 @@ class Consumer(
         this.forEach { r -> onMessage(r, logger) }
     }
 
-    private fun onConsumedSegmentAppend(producerOffset: Long) {
+    private fun onConsumedSegmentAppend(incomingProducerOffset: Long) {
         val records = ArrayList<PuroRecord>()
 
-        if (producerOffset <= consumerOffset) {
-            logger.warn("Consumer received out-of-date producer offset $producerOffset while at consumer offset $consumerOffset")
+        if (incomingProducerOffset <= consumerOffset) {
+            logger.warn("Consumer received out-of-date producer offset $incomingProducerOffset while at consumer offset $consumerOffset")
         }
 
-        val fetchResult = withConsumerLock(consumerOffset, producerOffset - consumerOffset) { fileChannel ->
-            fetch(fileChannel, records, producerOffset)
+        val fetchResult = withConsumerLock(consumerOffset, incomingProducerOffset - consumerOffset) { fileChannel ->
+            fetch(fileChannel, records, incomingProducerOffset)
         }
 
         fetchResult.onRight {
@@ -210,16 +226,13 @@ class Consumer(
                 //logger.info(if(consumeState is ConsumeState.Large) { "large" } else {"small"})
 
                 is GetRecordsAbnormality.StandardTombstone, GetRecordsAbnormality.RecordsAfterTombstone -> {
+                    // TODO segment rollover
                     currentConsumerLocked = true
                     records.onMessages()
                 }
                 // The `consumedSegmentOrder` _really_ should not have changed between these two points
-                is GetRecordsAbnormality.LowSignalBit -> segmentChangeQueue.put(
-                    ConsumerSegmentEvent(
-                        producerOffset,
-                        consumedSegmentOrder
-                    )
-                )
+                //
+                is GetRecordsAbnormality.LowSignalBit -> offsetChangeChangeSemaphore.release()
             }
         }.onLeft {
             //TODO an actually acceptable logging message
@@ -230,12 +243,12 @@ class Consumer(
     private fun standardFetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
-        producerOffset: Long
+        incomingProducerOffset: Long
     ): ConsumerResult<GetRecordsAbnormality?> {
         val (finalConsumerOffset, fetchedRecords, readAbnormalOffsetWindow, abnormality) = standardRead(
             fileChannel,
             consumerOffset,
-            producerOffset,
+            incomingProducerOffset,
         )
         records.addAll(fetchedRecords)
         consumerOffset = finalConsumerOffset
@@ -247,10 +260,10 @@ class Consumer(
     private fun fetch(
         fileChannel: FileChannel,
         records: ArrayList<PuroRecord>,
-        producerOffset: Long
+        incomingProducerOffset: Long
     ): ConsumerResult<GetRecordsAbnormality?> {
         if (abnormalOffsetWindow == null) {
-            return standardFetch(fileChannel, records, producerOffset)
+            return standardFetch(fileChannel, records, incomingProducerOffset)
         } else {
             readBuffer.clear()
             fileChannel.read(readBuffer)
@@ -262,7 +275,7 @@ class Consumer(
                 ifRight = { result ->
                     consumerOffset += result.second
                     abnormalOffsetWindow = null
-                    return standardFetch(fileChannel, records, producerOffset)
+                    return standardFetch(fileChannel, records, incomingProducerOffset)
                 },
                 ifLeft = {
                     //readBuffer.rewind()
@@ -277,7 +290,7 @@ class Consumer(
     private fun standardRead(
         fileChannel: FileChannel,
         startingReadOffset: Long,
-        producerOffset: Long
+        incomingProducerOffset: Long
     ): StandardRead {
         // When I transitioned to returning values rather than carrying out side effects I needed to decide how to best
         // name the return variables that would be mapped to fields by the caller and I used a `read` as a prefix
@@ -292,11 +305,11 @@ class Consumer(
         var isPossibleLastBatch: Boolean
 
         while (!isLastBatch) {
-            isPossibleLastBatch = (producerOffset - readOffset) <= readBufferSize
+            isPossibleLastBatch = (incomingProducerOffset - readOffset) <= readBufferSize
 
             readBuffer.clear()
             if (isPossibleLastBatch) {
-                readBuffer.limit(((producerOffset - readOffset) % readBufferSize).toInt()) //Saftey!
+                readBuffer.limit(((incomingProducerOffset - readOffset) % readBufferSize).toInt()) //Saftey!
             }
 
             fileChannel.position(readOffset)
@@ -309,7 +322,7 @@ class Consumer(
                         readBuffer,
                         0,
                         if (isPossibleLastBatch) {
-                            (producerOffset - readOffset) % readBufferSize
+                            (incomingProducerOffset - readOffset) % readBufferSize
                         } else {
                             readBufferSize.toLong()
                         },
@@ -330,7 +343,7 @@ class Consumer(
                             readRecords.addAll(getSignalRecordsResult.records)
                             // Talk as of 7ba7441 lastAbnormality wasn't used where it could have been, possible some subtle bugs here
                             if (isPossibleLastBatch && abnormality == GetRecordsAbnormality.Truncation) {
-                                readAbnormalOffsetWindow = consumerOffset to producerOffset
+                                readAbnormalOffsetWindow = consumerOffset to incomingProducerOffset
                             } else if (abnormality == GetRecordsAbnormality.RecordsAfterTombstone ||
                                 abnormality == GetRecordsAbnormality.StandardTombstone && !isPossibleLastBatch
                             ) {
@@ -368,7 +381,7 @@ class Consumer(
                         readBuffer,
                         0,
                         if (isPossibleLastBatch) {
-                            (producerOffset - readOffset) % readBufferSize
+                            (incomingProducerOffset - readOffset) % readBufferSize
                         } else {
                             readBufferSize.toLong()
                         }
@@ -388,7 +401,7 @@ class Consumer(
                     )
                 }
             }
-            isLastBatch = isPossibleLastBatch && readOffset == producerOffset
+            isLastBatch = isPossibleLastBatch && readOffset == incomingProducerOffset
         }
         logger.info("Final read offset $readOffset")
 
@@ -459,7 +472,8 @@ class Consumer(
                     Thread.sleep(retryDelay)
                 }
             } while (lock == null)
-            segmentChangeQueue.put(ConsumerSegmentEvent(channel.size(), consumedSegmentOrder))
+            latestProducerOffset.set(channel.size())
+            offsetChangeChangeSemaphore.release()
         }
     }
 

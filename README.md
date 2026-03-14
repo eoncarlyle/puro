@@ -23,12 +23,15 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [x] Use the `ReadRecords`  data structure
 - [ ] Producer total segment iteration
   - [x] Change block start message to include block length 
-  - [ ] Finish `fullSegmentIntegrityCheck`
+  - [x] Finish `fullSegmentIntegrityCheck`
   - [ ] Producer state machine (`ProducerSegmentState`)
   - [ ] Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state tracking
 - [ ] Producer segment cleanup
 - [ ] Investigate how long it will take to iterate down the full length of a nontrivially sized segment will be
 - [ ] Consumer handling segment cleanup deletion
+  - [ ] Producers checking segment tombstones - need to check every message?
+  - [ ] Consumer incoming offsets with thread for catchup on rollover
+- [ ] Fix `Segments.getHighestSegmentOrder` errant tombstone interpertation
 - [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
 - [ ] Producer active segment change handling
 - [ ] Consumer active segment change handling
@@ -90,6 +93,19 @@ memory - there has to be some interesting work there. But as far as how Puro is 
 than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
+
+### 2026-03-13
+
+`Segments.getHighestSegmentOrder` has a problem: if you get unlucky, a valid segment that just failed at a bad spot 
+could be interperted as a tombstone.
+
+### 2026-03-09
+
+Taking the segment change queue really isn't that bad. You need to be careful about segment rollover, but this is good
+preperation for the actual segment rollover work later down the line
+
+Also as main is currently written right now the second consumer isn't actually checking the crcs on the block start 
+message, must investigate
 
 ### 2026-03-08
 

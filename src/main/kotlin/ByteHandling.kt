@@ -70,7 +70,9 @@ fun ByteBuffer.fromSafeVlq(): Triple<Int, Int, Byte>? {
     }
 }
 
-fun ByteBuffer.readSafety() = if (this.hasRemaining()) { this } else null
+fun ByteBuffer.readSafety() = if (this.hasRemaining()) {
+    this
+} else null
 
 //! ByteBuffer state modification
 fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
@@ -79,7 +81,9 @@ fun ByteBuffer.getEncodedString(length: Int): Pair<String, Byte> {
     return String(array) to crc8(array)
 }
 
-fun ByteBuffer.getSafeBufferSlice(length: Int) = if (hasRemaining() && this.remaining() >= length) { this.getBufferSlice(length) } else null
+fun ByteBuffer.getSafeBufferSlice(length: Int) = if (hasRemaining() && this.remaining() >= length) {
+    this.getBufferSlice(length)
+} else null
 
 @Deprecated("Unsafe bounds")
 fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
@@ -89,7 +93,9 @@ fun ByteBuffer.getBufferSlice(length: Int): Pair<ByteBuffer, Byte> {
     return ByteBuffer.wrap(array) to crc8(array)
 }
 
-fun ByteBuffer.getSafeArraySlice(length: Int) = if (this.hasRemaining() && this.remaining() >= length) { this.getArraySlice(length) } else null
+fun ByteBuffer.getSafeArraySlice(length: Int) = if (this.hasRemaining() && this.remaining() >= length) {
+    this.getArraySlice(length)
+} else null
 
 @Deprecated("Unsafe bounds")
 fun ByteBuffer.getArraySlice(length: Int): Pair<ByteArray, Byte> {
@@ -121,6 +127,16 @@ fun PuroRecord.toSerialised(): Pair<SerialisedPuroRecord, Int> {
     // crc8 + encodedSubrecordLength + (topicLength + topic + keyLength + key + value)
     val recordLength = RECORD_CRC_BYTES + encodedSubrecordLength.capacity() + subrecordLength
 
+    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
+    val a = listOf(
+        crc8(encodedSubrecordLength),
+        crc8(encodedTopicLength),
+        crc8(topic),
+        crc8(encodedKeyLength),
+        crc8(key),
+        crc8(value)
+    )
+    rewindAll(encodedSubrecordLength, encodedTopicLength, encodedKeyLength, key, value)
     val messageCrc = getMessageCrc(
         encodedSubrecordLength = encodedSubrecordLength,
         encodedTopicLength = encodedTopicLength,
