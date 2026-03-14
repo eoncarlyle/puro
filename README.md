@@ -36,6 +36,7 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Producer active segment change handling
 - [ ] Consumer active segment change handling
 - [x] Handling messages larger than the read buffer
+- [ ] Investigate `crc8(byteArrayOf(8,1,2,0,1,0,0,0,35))` not equal to `updateCrc8List(-71, 49, 98, 0, 0, 6)`
 
 ## Initial Action Items
 
@@ -101,6 +102,23 @@ I have lost some faith in my CRC calculation. The serialised block start message
 bit on the value is a high signal bit. The CRC values of the non-zero fields are -71, 49, 98, and 6. But 
 `crc8(byteArrayOf(8,1,2,0,1,0,0,0,35))` is not equal to `updateCrc8List(-71, 49, 98, 0, 0, 6)` which is both concerning
 and, for the implementation I'm currently working on, annoying.
+
+I don't exactly understand the pattern that I am seeing here today, possible have better producer memory performance in
+most recent work. Table carries out benchmarks on today's commits. This is honestly rather noisy at least for the 
+big benchmark.
+
+| Commit    | Benchmark 1 (ms/op) | Stdev  | Benchmark 2 (ms/op) | Stdev |
+|-----------|---------------------|--------|---------------------|-------|
+| `6fa2331` | 617.876             | 70.402 | 0.562               | 0.005 |
+| `d5535fd` | 715.830             | 22.221 | 1.014               | 0.004 |
+| `0ce182a` | 707.736             | 21.457 | 1.013               | 0.005 |
+| `f486ee0` | N/A (error)         | -      | N/A (error)         | -     |
+| `ee26551` | 551.684             | 9.963  | 0.559               | 0.004 |
+
+For consumer level offset handling, the `offsetChangeSemaphoreListeningThread` cannot be handling the segment 
+transition. That has to already be taken care of beforehand. The consumer side of things is really not that bad - 
+honestly most of the work for segment rollover is done as far as the consumer are concerned. I do see a pretty 
+concerning dropoff in performance in `2248f99`. Possibly just noise though.
 
 ### 2026-03-13
 
