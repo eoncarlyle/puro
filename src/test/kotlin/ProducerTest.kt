@@ -179,7 +179,7 @@ class ProducerTest {
         withTempDir(System.currentTimeMillis().toString()) { puroDirectory ->
             /* Block start message
         --------------------------------------------------------
-        VAL:   89    8    1    2    0    1    0    0    0   35
+        VAL:   -68    8    1    2    0    1    0    0    0   35
         GLB:    0    1    2    3    4    5    6    7    8    9
         REL:    0    1    2    3    4    5    6    7    8    9
         --------------------------------------------------------

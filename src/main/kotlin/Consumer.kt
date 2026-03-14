@@ -1,7 +1,6 @@
 import io.methvin.watcher.DirectoryChangeEvent
 import io.methvin.watcher.DirectoryWatcher
 import org.slf4j.Logger
-import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -9,16 +8,14 @@ import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.Semaphore
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.toJavaDuration
 
 class Consumer(
-    val streamDirectory: Path,
+    private val streamDirectory: Path,
     serialisedTopicNames: List<String>,
     private val logger: Logger,
     val readBufferSize: Int = 8192,
@@ -28,14 +25,11 @@ class Consumer(
     companion object {
         private var defaultRetryDelay = 1.seconds.toJavaDuration()
         private var maximumRetryDelay = 10.milliseconds.toJavaDuration()
-
-        // I don't have very good intuition on this one, should be benchmarked
-        private val queueCapacity = 10_000
     }
 
     //TODO make this configurable:
-    //var _consumedSegment = getActiveSegment(streamDirectory)
 
+    //var _consumedSegment = getActiveSegment(streamDirectory)
     //This is a default and there is probably a better way to handle this given `watcherPreInitialisation` I guess
     //Really this block of three fields are more interesting in `watcherPreInitialisation`
     private var consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
@@ -44,32 +38,17 @@ class Consumer(
     private var readState: ReadState = ReadState.Standard
     private var retryDelay = defaultRetryDelay
 
-    //private var changeQueueListenerRunning = AtomicBoolean(true)
     private var latestProducerOffset = AtomicLong(0)
     private var offsetChangeChangeSemaphore = Semaphore(0)
 
     val readBuffer = ByteBuffer.allocate(readBufferSize)
     private var abnormalOffsetWindow: Pair<Long, Long>? = null
 
-    // PriorityBlockingQueue javadoc:
-    // "Operations on this class make no guarantees about the ordering of elements with equal priority.
-    // If you need to enforce an ordering, you can define custom classes or comparators that use a secondary key to
-    // break ties in primary priority values"
-    private val compareConsumerSegmentPair =
-        Comparator<ConsumerSegmentEvent> { p1, p2 ->
-            return@Comparator (if (p1.segmentOrder != p2.segmentOrder) {
-                p1.segmentOrder - p2.segmentOrder
-            } else {
-                (p1.offset - p2.offset).toInt()
-            })
-        }
-
-    //private var segmentChangeQueue = PriorityBlockingQueue(queueCapacity, compareConsumerSegmentPair)
     private var subscribedTopics = serialisedTopicNames.map { it.toByteArray() }
 
     fun stopListening() {
         directoryWatcher?.close()
-        changeQueueListenerThread.interrupt()
+        offsetChangeSemaphoreListeningThread.interrupt()
         //changeQueueListenerRunning.set(false)
     }
 
@@ -79,9 +58,11 @@ class Consumer(
         2) An appropriate segment to consume and consumer offset have to be set based off of `startPoint`
      */
     private fun watcherPreInitialisation() {
+        /*
         while (getLowestSegmentOrder(streamDirectory) == -1) {
             Thread.sleep(retryDelay) // Should eventually give up
         }
+         */
         consumedSegmentOrder = when (startPoint) {
             // See README 'Stale and spurious segment problems'
             is ConsumerStartPoint.StreamBeginning -> getLowestSegmentOrder(streamDirectory)
@@ -90,12 +71,18 @@ class Consumer(
         }
 
         consumedSegmentOrder = getLowestSegmentOrder(streamDirectory)
-        // The answer to 'what happens if something is deleted at the worst time' is not very good here
-        val path = getSegmentPath(streamDirectory, consumedSegmentOrder)
-        path
-            ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
-        // I don't think double events are risked by this, but it's taken care of by the `onConsumedSegmentAppend`
-        latestProducerOffset.set(Files.size(path))
+
+        if (consumedSegmentOrder == -1) {
+            currentConsumerLocked = true
+            logger.warn("Started without segment")
+        } else {
+            // The answer to 'what happens if something is deleted at the worst time' is not very good here
+            val path = getSegmentPath(streamDirectory, consumedSegmentOrder)
+            path
+                ?: throw RuntimeException("Illegal state: consumed segment order of $consumedSegmentOrder didn't have a path on startup")
+            // I don't think double events are risked by this, but it's taken care of by the `onConsumedSegmentAppend`
+            latestProducerOffset.set(Files.size(path))
+        }
     }
 
     private val directoryWatcher = DirectoryWatcher.builder()
@@ -141,7 +128,16 @@ class Consumer(
                     }
                 }
 
-                DirectoryChangeEvent.EventType.CREATE -> {}
+                DirectoryChangeEvent.EventType.CREATE -> {
+                    if (currentConsumerLocked && incomingSegmentOrder == consumedSegmentOrder + 1) {
+                        logger.info("Segment rollover detected, unlocking consumer")
+                        consumedSegmentOrder = incomingSegmentOrder
+                        currentConsumerLocked = false
+                        latestProducerOffset.set(Files.size(getConsumedSegmentPath()))
+                        offsetChangeChangeSemaphore.release()
+                    }
+                }
+
                 DirectoryChangeEvent.EventType.DELETE -> {
                 } //Log something probably
                 DirectoryChangeEvent.EventType.OVERFLOW -> {
@@ -155,35 +151,19 @@ class Consumer(
         }
         .build()
 
-    private val changeQueueListenerThread = Thread {
+    private val offsetChangeSemaphoreListeningThread = Thread {
         while (true) {
             try {
-                offsetChangeChangeSemaphore.tryAcquire(1, 25, TimeUnit.MICROSECONDS)
+                offsetChangeChangeSemaphore.acquire(1)
 
-                //val (producerOffset, incomingSegmentOrder) = event
                 val incomingProducerOffset = latestProducerOffset.get()
-                val incomingSegmentOrder = getSegmentPath(streamDirectory, incomingProducerOffset.toInt())
-                if (currentConsumerLocked) { //and (incomingSegmentOrder == consumedSegmentOrder)) {
+                if (currentConsumerLocked) {
                     logger.error("Ignored ConsumerSegmentEvent: segment locked, current order $consumedSegmentOrder")
                 } else if (incomingProducerOffset <= consumerOffset) {
-                    //TODO different handling for smaller consumer offsets?
-
-            } else { // if (incomingSegmentOrder == consumedSegmentOrder) {
-                    logger.info("Incoming producer offset: $incomingSegmentOrder")
+                    logger.warn("Ignored ConsumerSegmentEvent: stale offset $incomingProducerOffset, current offset $consumerOffset")
+                } else {
+                    logger.info("Incoming producer offset: $incomingProducerOffset")
                     onConsumedSegmentAppend(incomingProducerOffset)
-                    // } else if (currentConsumerLocked and (incomingSegmentOrder == consumedSegmentOrder + 1)) {
-                    //     // The priority queue will ensure all records of order _N_ will be received before all records of
-                    //     // order _N+1_
-                    //     val nextSegment = getSegmentPath(streamDirectory, consumedSegmentOrder + 1)
-                    //     if (nextSegment != null) {
-                    //         consumedSegmentOrder++
-                    //         currentConsumerLocked = false
-                    //         onConsumedSegmentAppend(producerOffset)
-                    //     } else {
-                    //         logger.error("Illegal ConsumerSegmentEvent: no segment present at order $incomingSegmentOrder")
-                    //     }
-                    // } else {
-                    //     logger.error("Illegal ConsumerSegmentEvent: segment order $incomingSegmentOrder, at lock state $currentConsumerLocked")
                 }
             } catch (e: InterruptedException) {
                 break
@@ -202,7 +182,7 @@ class Consumer(
         logger.info("Consumer Directory Watcher Configured")
 
         catchupThread().start()
-        changeQueueListenerThread.start()
+        offsetChangeSemaphoreListeningThread.start()
     }
 
     private fun ArrayList<PuroRecord>.onMessages() {
@@ -231,7 +211,6 @@ class Consumer(
                     records.onMessages()
                 }
                 // The `consumedSegmentOrder` _really_ should not have changed between these two points
-                //
                 is GetRecordsAbnormality.LowSignalBit -> offsetChangeChangeSemaphore.release()
             }
         }.onLeft {
@@ -455,11 +434,19 @@ class Consumer(
         return segment
     }
 
+    private fun getMaybeConsumedSegmentChannel(): FileChannel? {
+        val segment = getSegmentPath(streamDirectory, consumedSegmentOrder)
+        return segment?.let { FileChannel.open(getConsumedSegmentPath(), StandardOpenOption.READ) }
+    }
+
     //The directory watcher sometimes doesn't catch events right after the consumer is created
 //Duplicate `segmentChangeQueue` events are harmless
     private fun catchupThread() = Thread {
         Thread.sleep(100)
-        getConsumedSegmentChannel().use { channel ->
+        getMaybeConsumedSegmentChannel().use { channel ->
+            if (channel == null) {
+                return@Thread
+            }
             var lock: FileLock? = null
             do {
                 try {

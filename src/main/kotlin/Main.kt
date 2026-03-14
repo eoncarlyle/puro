@@ -179,7 +179,7 @@ fun secondaryProducerRead() {
 fun thirdProducerRead() {
     /* Block start message
     --------------------------------------------------------
-    VAL:   89    8    1    2    0    1    0    0    0   35
+    VAL:   -68    8    1    2    0    1    0    0    0   35
     GLB:    0    1    2    3    4    5    6    7    8    9
     REL:    0    1    2    3    4    5    6    7    8    9
     --------------------------------------------------------
@@ -188,21 +188,21 @@ fun thirdProducerRead() {
     val logger = LoggerFactory.getLogger("MainKt")
     Path("/tmp/puro/stream0.puro").deleteIfExists()
     val puroDirectory = Path("/tmp/puro")
-    Path.of("/tmp/puro/stream0.puro").createFile()
+    //Path.of("/tmp/puro/stream0.puro").createFile()
+
+    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = logger) { record, internalLogger ->
+        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
+    }
+    consumer.run()
+    Thread.sleep(100)
 
     val firstProducer = Producer(puroDirectory, 8192, logger = logger)
     firstProducer.send(
         listOf(PuroRecord("testTopic", "testKey".toByteBuffer(), "First".toByteBuffer()))
     )
 
-    val consumer = Consumer(puroDirectory, listOf("testTopic"), logger = NOPLogger.NOP_LOGGER) { record, internalLogger ->
-        internalLogger.info("${String(record.topic)}/${String(record.key.array())}/${String(record.value.array())}")
-    }
-
     val secondProducer = Producer(puroDirectory, 8192, logger = logger)
 
-    consumer.run()
-    Thread.sleep(100)
     secondProducer.send(
         listOf(
             PuroRecord("testTopic", "testKey".toByteBuffer(), "Second".toByteBuffer()),
