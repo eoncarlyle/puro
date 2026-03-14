@@ -368,3 +368,16 @@ fun getRecord(recordBuffer: ByteBuffer): ConsumerResult<Pair<PuroRecord, Int>> {
         right(PuroRecord(topic, key, value) to (recordBuffer.position() - start))
     } else left(ConsumerError.FailingCrc)
 }
+
+// This isn't ideal. Check the README comment dated 2026-03-14 in commit `0ce182a`
+fun getCrc8(recordBuffer: ByteBuffer): Byte {
+    recordBuffer.position(1)
+    val (encodedSubrecordLength, _, crc1) = recordBuffer.fromVlq()
+    val (topicLength, topicLengthByteCount, crc2) = recordBuffer.fromVlq()
+    val (topic, crc3) = recordBuffer.getArraySlice(topicLength)
+    val (keyLength, keyLengthByteCount, crc4) = recordBuffer.fromVlq()
+    val (key, crc5) = recordBuffer.getBufferSlice(keyLength)
+    val (value, crc6) = recordBuffer.getBufferSlice(encodedSubrecordLength - topicLengthByteCount - topicLength - keyLengthByteCount - keyLength)
+
+    return updateCrc8List(crc1, crc2, crc3, crc4, crc5, crc6)
+}

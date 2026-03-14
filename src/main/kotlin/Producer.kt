@@ -21,7 +21,7 @@ class Producer {
     var times = 0;
     var producerState: ProducerSegmentState = ProducerSegmentState.Init
 
-    private var startRecordArray = ByteArray(BLOCK_START_RECORD_SIZE - 1)
+    private var startRecordBuffer = ByteBuffer.wrap(ByteArray(BLOCK_START_RECORD_SIZE))
 
     companion object {
         // This should be configurable?
@@ -93,13 +93,13 @@ class Producer {
                 val initialPosition = channel.position()
                 channel.write(serialiseRecordBatch)
 
-                serialiseRecordBatch.rewind().get(1, startRecordArray)
-                startRecordArray[BLOCK_START_RECORD_SIZE - 6] = 0x01
-                val finalBlockStartRecordCrc8 = crc8(startRecordArray)
+                startRecordBuffer.put(0, serialiseRecordBatch, 0, BLOCK_END_RECORD_SIZE)
+                startRecordBuffer.put(BLOCK_START_RECORD_SIZE - 5, 0x01) // Setting signal bit high
+                val finalBlockStartRecordCrc8 = getCrc8(startRecordBuffer)
 
                 val finalRecord = ByteBuffer.wrap(ByteArray(BLOCK_START_RECORD_SIZE))
                 finalRecord.put(finalBlockStartRecordCrc8)
-                finalRecord.put(startRecordArray)
+                finalRecord.put(startRecordBuffer)
                 finalRecord.rewind()
                 getRecord(finalRecord)
 
