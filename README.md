@@ -22,15 +22,16 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [x] Consumer class checking signal bits
 - [x] Use the `ReadRecords`  data structure
 - [ ] Producer total segment iteration
-  - [x] Change block start message to include block length 
-  - [x] Finish `fullSegmentIntegrityCheck`
-  - [ ] Producer state machine (`ProducerSegmentState`)
-  - [ ] Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state tracking
+    - [x] Change block start message to include block length
+    - [x] Finish `fullSegmentIntegrityCheck`
+    - [ ] Producer state machine (`ProducerSegmentState`)
+    - [ ] Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state
+      tracking
 - [ ] Producer segment cleanup
 - [ ] Investigate how long it will take to iterate down the full length of a nontrivially sized segment will be
 - [ ] Consumer handling segment cleanup deletion
-  - [ ] Producers checking segment tombstones - need to check every message?
-  - [ ] Consumer incoming offsets with thread for catchup on rollover
+    - [ ] Producers checking segment tombstones - need to check every message?
+    - [ ] Consumer incoming offsets with thread for catchup on rollover
 - [ ] Fix `Segments.getHighestSegmentOrder` errant tombstone interpertation
 - [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
 - [ ] Producer active segment change handling
@@ -62,7 +63,6 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Fix spurious segment
 - [ ] Multithreaded producer tests
 
-
 ## Message format
 
 ```text
@@ -74,12 +74,14 @@ keyLength: varint
 key: byte[]
 value: byte[]
 ```
+
 - Subrecord length is the sum of the length of `topicLength`, `topic`, `keyLength`, `key`, and `value`
 - Total length is the sum of the length of `signal`, `crc`, and the number of bytes required to express
   `subrecordLength`
 
 - The value in the block start record the block signal bit
-- The value in the block end record is the 32-bit integer length of the sublock (number of bytes in the block except for the block end)
+- The value in the block end record is the 32-bit integer length of the sublock (number of bytes in the block except for
+  the block end)
 
 ## Development Log
 
@@ -95,16 +97,31 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-03-15
+`getSegmentIntegrity`
+- Within lock tries to find start block record
+- Confirms matching end block record
+- Returns broken offset if failed integrity
+
+`lastBlockIntegrityCheckOrCleanup`
+- Tries to find block end record
+- Tries to find block start record: confirms signal bit
+- Aquires a lock halfway through even though it should already have one?
+- Doesn't match segment lengths
+- Throws instead of returning result
+
+Okay `getSegmentIntegrity` is effectively a wose 
+
 ### 2026-03-14
 
 I have lost some faith in my CRC calculation. The serialised block start message of focus in the current commit is
-`$crc, 8, 1, 2, 0, 1, 0, 0, 0, 35`. Referencing the message format this is all pretty explainable; the high order 
-bit on the value is a high signal bit. The CRC values of the non-zero fields are -71, 49, 98, and 6. But 
+`$crc, 8, 1, 2, 0, 1, 0, 0, 0, 35`. Referencing the message format this is all pretty explainable; the high order
+bit on the value is a high signal bit. The CRC values of the non-zero fields are -71, 49, 98, and 6. But
 `crc8(byteArrayOf(8,1,2,0,1,0,0,0,35))` is not equal to `updateCrc8List(-71, 49, 98, 0, 0, 6)` which is both concerning
 and, for the implementation I'm currently working on, annoying.
 
 I don't exactly understand the pattern that I am seeing here today, possible have better producer memory performance in
-most recent work. Table carries out benchmarks on today's commits. This is honestly rather noisy at least for the 
+most recent work. Table carries out benchmarks on today's commits. This is honestly rather noisy at least for the
 big benchmark.
 
 | Commit    | Benchmark 1 (ms/op) | Stdev  | Benchmark 2 (ms/op) | Stdev |
@@ -115,14 +132,17 @@ big benchmark.
 | `f486ee0` | N/A (error)         | -      | N/A (error)         | -     |
 | `ee26551` | 551.684             | 9.963  | 0.559               | 0.004 |
 
-For consumer level offset handling, the `offsetChangeSemaphoreListeningThread` cannot be handling the segment 
-transition. That has to already be taken care of beforehand. The consumer side of things is really not that bad - 
-honestly most of the work for segment rollover is done as far as the consumer are concerned. I do see a pretty 
+For consumer level offset handling, the `offsetChangeSemaphoreListeningThread` cannot be handling the segment
+transition. That has to already be taken care of beforehand. The consumer side of things is really not that bad -
+honestly most of the work for segment rollover is done as far as the consumer are concerned. I do see a pretty
 concerning dropoff in performance in `2248f99`. Possibly just noise though.
+
+Okay, I see a couple of things on the signal bit piece. `getSegmentIntegrity` (run on startup) is more robust than
+`lastBlockIntegrityCheckOrCleanup`.
 
 ### 2026-03-13
 
-`Segments.getHighestSegmentOrder` has a problem: if you get unlucky, a valid segment that just failed at a bad spot 
+`Segments.getHighestSegmentOrder` has a problem: if you get unlucky, a valid segment that just failed at a bad spot
 could be interperted as a tombstone.
 
 ### 2026-03-09
@@ -130,7 +150,7 @@ could be interperted as a tombstone.
 Taking the segment change queue really isn't that bad. You need to be careful about segment rollover, but this is good
 preperation for the actual segment rollover work later down the line
 
-Also as main is currently written right now the second consumer isn't actually checking the crcs on the block start 
+Also as main is currently written right now the second consumer isn't actually checking the crcs on the block start
 message, must investigate
 
 ### 2026-03-08
@@ -159,27 +179,30 @@ for `fullSegmentIntegrityCheck`
 Hit a 'I don't think this ever work' bug with a bad comparison in `Segments.getHighestSegmentOrder`
 
 ### 2026-03-07
+
 Q) Why do we need to traverse down the entire segment on producer startup?
 A) While an end-of-block message is what we expect for the last bytes of a message, we could get very unlucky and an
-incomplete write could exactly match an end-of-block message. The same argument applies for the block start message 
+incomplete write could exactly match an end-of-block message. The same argument applies for the block start message
 that would be navigated to from the block end. However, if the producer has audited the length of the segment and has
-confirmed high signal bits across the length of the record, it can check if the block end message is coherant: if 
+confirmed high signal bits across the length of the record, it can check if the block end message is coherant: if
 the producer has checked soft integrity (i.e. not every message but that the block boundaries make sense and have high
-signal bits) from bytes 0 to _N_, if the incoming block end message points to a block start message that starts at 
-_N_ + 1 with a high signal bit, the producer knows that soundness has been demonstrated. Otherwise the producer can 
+signal bits) from bytes 0 to _N_, if the incoming block end message points to a block start message that starts at
+_N_ + 1 with a high signal bit, the producer knows that soundness has been demonstrated. Otherwise the producer can
 do cleanup accordingly.
 
-This doesn't protect from 'bzyantine', if you will, faults if a bit is flipped within a segment. When I finally 
+This doesn't protect from 'bzyantine', if you will, faults if a bit is flipped within a segment. When I finally
 write the final deal about this library, that should be addressed.
 
 `a2fd50d`: A few surprises
-- As of `d6ea44b` the actual size of the block end message when a breakpoint is dropped in `buildProtoRecordAtIndex` 
+
+- As of `d6ea44b` the actual size of the block end message when a breakpoint is dropped in `buildProtoRecordAtIndex`
   was 9 bytes rather than 10
 - When increasing `BLOCK_START_RECORD_SIZE` breaks consumption
-I need to do some simple testing to see what is going on here - I must be reading the block end messages in such a 
-  way previous to `a2fd50d` that it didn't matter how the 
+  I need to do some simple testing to see what is going on here - I must be reading the block end messages in such a
+  way previous to `a2fd50d` that it didn't matter how the
 
 ### 2026-02-25
+
 It is certainly nice to have some benchmarks. This is what we have
 
 Dual benchmark, 1 million records: (min, avg, max) = (472.425, 515.485, 658.847), stdev = 48.937
@@ -205,22 +228,21 @@ Exception in thread "Thread-2" java.lang.OutOfMemoryError: Java heap space
 	at java.base/java.lang.Thread.run(Thread.java:1583)
 ```
 
-Once records are read the `readRecords` array is GC'd but there is an opportunity to pool the objects. One problem 
-is that we don't know how large the number of records per read will be. It likely is the case that some data 
-structure other than an `ArrayList` will make sense here. For all of my difficulties with buffers, some resizable 
-buffer with a cursor keeping track of position may be alright. The reason the cursor is important is to keep track 
-of the objects that have and have not been initialised; each element will be a non-null `PuroRecord`. If more 
-records in the previous read were returned than the current capacity of the buffer it will be resized. Future, 
-smaller reads will use the buffer semantics to progress only to the point that the buffer has been allocated. 
+Once records are read the `readRecords` array is GC'd but there is an opportunity to pool the objects. One problem
+is that we don't know how large the number of records per read will be. It likely is the case that some data
+structure other than an `ArrayList` will make sense here. For all of my difficulties with buffers, some resizable
+buffer with a cursor keeping track of position may be alright. The reason the cursor is important is to keep track
+of the objects that have and have not been initialised; each element will be a non-null `PuroRecord`. If more
+records in the previous read were returned than the current capacity of the buffer it will be resized. Future,
+smaller reads will use the buffer semantics to progress only to the point that the buffer has been allocated.
 
-Not wanting to expose the details of the backing data structure will be reason enough to hide some of the detail here. 
+Not wanting to expose the details of the backing data structure will be reason enough to hide some of the detail here.
 
 ### 2026-03-07
 
-
-
 ### 2026-02-28
-The new ReadRecords data structure did not prevent failures when `measurements = 10_000_000L;`  in 
+
+The new ReadRecords data structure did not prevent failures when `measurements = 10_000_000L;`  in
 `PuroDualBenchmark`, but at the very least the failure is in a different place now which is nice
 
 ### 2026-02-24
@@ -228,7 +250,7 @@ The new ReadRecords data structure did not prevent failures when `measurements =
 `ac1e6e2`: I don't have a great model as to why that fixed the proceeding bug
 `segmentChangeQueue.take()`: `PriorityBlockingQueue#take` is blocking, took me too long to realise this was the issue
 
-The benchmarks are almost entirely working but there is a little cleanup that is still required here: 
+The benchmarks are almost entirely working but there is a little cleanup that is still required here:
 
 ```text
 Exception in thread "Thread-72" java.nio.file.ClosedWatchServiceException
@@ -237,30 +259,31 @@ Exception in thread "Thread-72" java.nio.file.ClosedWatchServiceException
 
 ### 2026-02-23
 
-When talking with Jesse today I had the realisation that the block-end message integrity checks aren't enough. If 
-one is rather unlucky, you have an incomplete write that leaves the final bytes equivalent to a valid block-end 
+When talking with Jesse today I had the realisation that the block-end message integrity checks aren't enough. If
+one is rather unlucky, you have an incomplete write that leaves the final bytes equivalent to a valid block-end
 message that points to a valid, unrelated block-start message. So the producers will always need to verify the integrity
 of the entire segment before they can consume anything new.
 
-So does the producer need to be a full consumer too? Does this defeat the whole purpose of the project? I don't 
-think so. If the block start message also contains the subblock size, this could be checked by the producer. I don't 
-think there is a way for the last message to be coincidental garbage that points to another coincidental garbage 
-imposter block start message, provided the sublock length actually lines up? The garbage issue requires going 
-outside of the known block so I think the only other piece of this is that the producer would need to confirm that 
-the last subblock doesn't point to an index it has already cleared. Because the producer has to confirm soundness 
+So does the producer need to be a full consumer too? Does this defeat the whole purpose of the project? I don't
+think so. If the block start message also contains the subblock size, this could be checked by the producer. I don't
+think there is a way for the last message to be coincidental garbage that points to another coincidental garbage
+imposter block start message, provided the sublock length actually lines up? The garbage issue requires going
+outside of the known block so I think the only other piece of this is that the producer would need to confirm that
+the last subblock doesn't point to an index it has already cleared. Because the producer has to confirm soundness
 down the entire length of the segment, this isn't something new.
 
-On a more pressing note, the current large read in `Main.kt` is failing. Tomorrow I need to check _why_, a cursory 
-look shows that these should be okay bytes; I think my existing command-line tools are usable here (but I need to 
+On a more pressing note, the current large read in `Main.kt` is failing. Tomorrow I need to check _why_, a cursory
+look shows that these should be okay bytes; I think my existing command-line tools are usable here (but I need to
 start passing proper CLI args for the segment definition)
 
 Edit: I don't understand why tests pass with `readBuffer.capacity()` when I think it should really be `readBuffer.
-remaining()` in `getRecords`. The existing tests fail without it, perhaps the bug is cancelled out elsewhere. But 
+remaining()` in `getRecords`. The existing tests fail without it, perhaps the bug is cancelled out elsewhere. But
 the place to start is with the existing tests.
 
 ### 2026-02-21
 
 Greping for `testKey`:
+
 ```shell
 $ grep -oba "testKey" stream0.pur
 ```
@@ -274,41 +297,41 @@ Today I have mostly been confused by my own tests; I'm finally picking this back
 
 This is on byte 0x140, so I think there is a good block followed by a bad one?
 
-RE: `3f6be85`: how on earth did anything work 
+RE: `3f6be85`: how on earth did anything work
 
 ### 2026-02-15
 
-I had a complete epiphany about how the consumer should work: the `segmentChangeQueue` isn't the only way to provide 
-the consumer an update as to update the consumer on new activity. There could just be a 'last safe' situation, but 
-may need to be careful with deletes. May need to have a new 'evaluation' consumer state to measure file size - I 
+I had a complete epiphany about how the consumer should work: the `segmentChangeQueue` isn't the only way to provide
+the consumer an update as to update the consumer on new activity. There could just be a 'last safe' situation, but
+may need to be careful with deletes. May need to have a new 'evaluation' consumer state to measure file size - I
 need to actually draw out the state machine on this one
 
 ### 2026-02-09
 
-For the segment-level hashmaps I'm not sure if I want to store a monotonically increasing long or a file size. File 
-size might be fraught with locking issues, but I don't love the monotonically increasing long. In both cases what we 
+For the segment-level hashmaps I'm not sure if I want to store a monotonically increasing long or a file size. File
+size might be fraught with locking issues, but I don't love the monotonically increasing long. In both cases what we
 are trying to establish is if an append has happened after a delete, so the delete -> append ordering is what happens.
-Maybe once an append 'cancels' a delete then the integers can stop monotonically increasing. Come to think of it, if 
+Maybe once an append 'cancels' a delete then the integers can stop monotonically increasing. Come to think of it, if
 the order is append/cancel@0/append@1 then longs can be recycled once the append@1 resets the count. Maybe we're good.
 
 Also the `Low signal bits` test isn't very elegant and should be fixed
 
 ### 2026-02-08
 
-I had an epiphany about integer conversions: I _do_ have control over how large the segments are because I can 
-always require a segment rollover once the segment becomes larger than full  integer of bytes. So that saves a lot of 
+I had an epiphany about integer conversions: I _do_ have control over how large the segments are because I can
+always require a segment rollover once the segment becomes larger than full integer of bytes. So that saves a lot of
 `long` conversions. As much as I would like to do soft static allocation á la
-[TigerBeetle](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/ARCHITECTURE.md#static-memory-allocation), I 
-think I would just leave that to be client specific. Perhaps a C client (or a later GC-free Kotlin client) would set 
-the maximum record size to be whatever Kafka supports with logged warnings for messages larger than that: if the 
+[TigerBeetle](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/ARCHITECTURE.md#static-memory-allocation), I
+think I would just leave that to be client specific. Perhaps a C client (or a later GC-free Kotlin client) would set
+the maximum record size to be whatever Kafka supports with logged warnings for messages larger than that: if the
 large message isn't being assembled then memory isn't being consumed. Also, where possible I should convert integers
 to unsigned integers, but I'm limited by what Java NIO can work with (which is not unsigned integers)
 
 ### 2026-02-05
 
 The producer truncation wasn't as bad as I thought.
-When `reference/incompleteSegment.puro` was used as a starting, the `Main` in the commit containing this line 
-(`193adce`) reproduced `reference/completeSegment.puro`  byte-for-byte. Next step is the consumer hash map to record 
+When `reference/incompleteSegment.puro` was used as a starting, the `Main` in the commit containing this line
+(`193adce`) reproduced `reference/completeSegment.puro`  byte-for-byte. Next step is the consumer hash map to record
 deletes to be referenced on event dequeue
 
 ```shell
@@ -333,30 +356,29 @@ A truncation abnormality _can_ take place if it isn't the end of fetch if a larg
 
 ```kotlin
     return when {
-        isEndOfFetch && truncationAbnormality -> GetSignalRecordsResult.StandardAbnormality(
-            records,
-            offset,
-            GetSignalRecordsAbnormality.Truncation
-        )
+    isEndOfFetch && truncationAbnormality -> GetSignalRecordsResult.StandardAbnormality(
+        records,
+        offset,
+        GetSignalRecordsAbnormality.Truncation
+    )
 
-        truncationAbnormality -> throw IllegalStateException("This should never happen")
-        else -> GetSignalRecordsResult.Success(records, offset)
-    }
+    truncationAbnormality -> throw IllegalStateException("This should never happen")
+    else -> GetSignalRecordsResult.Success(records, offset)
+}
 ```
 
 ### 2026-01-22
 
-I am more or less assuming that te consumer can't be working on a large message (without yet finishing it) and then be 
+I am more or less assuming that te consumer can't be working on a large message (without yet finishing it) and then be
 hit by a block start segment, because I think the segment is truly unrecoverable at that point.
 
 Notable comment, and also the program currently can't handle small messages intermixed with big ones, must fix
- //TODO I recall needing to exclude control segments from the `isRelevantTopic` call, but I
- //don't remember why. This is where I want to do the signal bit check.
-            
+//TODO I recall needing to exclude control segments from the `isRelevantTopic` call, but I
+//don't remember why. This is where I want to do the signal bit check.
 
 ### 2026-01-21
 
-The tombstone record should act like a special case of a block end, and there is no reason to terminate with two 
+The tombstone record should act like a special case of a block end, and there is no reason to terminate with two
 messages. If neither have a key and both have a topic of the same length then it's just a matter of adding that integer
 payload to the tombstone records.
 
@@ -367,7 +389,7 @@ possibly inconsistent data structures but A) if it is good enough for HFT firms 
 straightforward enough. This should probably be an array of arrays rather than a hashtable because segment order will be
 the key.
 
-In case I'm looking for the producer debug fragment, it's in depr. Also, the 'SignalBit' naming scheme should go away 
+In case I'm looking for the producer debug fragment, it's in depr. Also, the 'SignalBit' naming scheme should go away
 soon.
 
 ### 2026-01-20
@@ -390,10 +412,11 @@ I will remember to check if a buffer is rewound when things are acting strange
 
 re: `ba59e9b` The way that large reads work is counter to the idea of using steps in `standardRead`. The result was
 a truncated large message that was otherwise handled well. Rather than using steps to determine the required number of
-reads, the offset  should be used instead. This would be breaking JPL's 'The Power of 10' rules, but I'm going to go 
+reads, the offset should be used instead. This would be breaking JPL's 'The Power of 10' rules, but I'm going to go
 out on a limb and say that Puro isn't quite as important as what JPL is doing.
 
 One-liner for decoding
+
 ```shell
  python3 -c "import sys; data=open('stream0.puro','rb').read(); print(', '.join(str(b if b<128 else b-256) for b in data))"
 ```
@@ -423,8 +446,6 @@ it really matters all that much.
 Sublock size = length of entire block except the end block message
 
 Removed the legacy producer in this build
-
-
 
 ### 2026-01-10
 
