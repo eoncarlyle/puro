@@ -138,6 +138,7 @@ class Producer {
         )
         readBuffer.flip()
 
+        // Could be spurious
         val blockEndRecord = when (maybeBlockEndRecord) {
             is GetRecordsResult.Success -> {
                 if (maybeBlockEndRecord.records.size == 1) {

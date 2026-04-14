@@ -36,8 +36,10 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
 - [ ] Fix getActiveSegment, 'new' tombstone record handling, changing `isRelevantTopic` calls
 - [ ] Producer active segment change handling
 - [ ] Consumer active segment change handling
+- [ ] Capping message size and segment length for integerisation
 - [x] Handling messages larger than the read buffer
 - [ ] Investigate `crc8(byteArrayOf(8,1,2,0,1,0,0,0,35))` not equal to `updateCrc8List(-71, 49, 98, 0, 0, 6)`
+- Making this work using the epsilon garbage collector
 
 ## Initial Action Items
 
@@ -97,20 +99,28 @@ than the buffer size should be treated as an abnormality. Thinking things throug
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
 
+### 2026-04-15
+
+I think that 'Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state
+tracking' meant that once a producer acquires a lock it needs to check segment integrity. But `getSegmentIntegrity`
+should be used going forward because it is frankly written better. I'm not sure how much state tracking will 
+actually be necessary but we shall see
+
 ### 2026-03-15
+
 `getSegmentIntegrity`
+
 - Within lock tries to find start block record
 - Confirms matching end block record
 - Returns broken offset if failed integrity
 
 `lastBlockIntegrityCheckOrCleanup`
+
 - Tries to find block end record
 - Tries to find block start record: confirms signal bit
 - Aquires a lock halfway through even though it should already have one?
 - Doesn't match segment lengths
 - Throws instead of returning result
-
-Okay `getSegmentIntegrity` is effectively a wose 
 
 ### 2026-03-14
 
