@@ -311,10 +311,10 @@ fun <T> withFileLockDimensions(
         }
     } while (lock == null)
 
+
     val fileSizeOnceLockAcquired = channel.size()
-    // TODO: Make as parameter
     val lockStart = if (fileSizeOnceLockAcquired >= BLOCK_END_RECORD_SIZE) {
-        fileSizeOnceLockAcquired - BLOCK_END_RECORD_SIZE // + 1
+        fileSizeOnceLockAcquired - BLOCK_END_RECORD_SIZE
     } else {
         0L
     }

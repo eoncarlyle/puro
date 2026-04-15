@@ -27,7 +27,7 @@ read buffer, which introduced some issues. I _think_ I have those resolved now.
     - [ ] Producer state machine (`ProducerSegmentState`)
     - [ ] Adapt `lastBlockIntegrityCheckOrCleanup` to check for incoming unobserved changes - will require state
       tracking
-- [ ] Producer segment cleanup
+- [ ] Producer segment cleanup (on startup)
 - [ ] Investigate how long it will take to iterate down the full length of a nontrivially sized segment will be
 - [ ] Consumer handling segment cleanup deletion
     - [ ] Producers checking segment tombstones - need to check every message?
@@ -98,6 +98,26 @@ memory - there has to be some interesting work there. But as far as how Puro is 
 than the buffer size should be treated as an abnormality. Thinking things through I think the only difference between
 this and a regular continuation is that this can be 'chained' multiple times and given that singular `getRecord` is
 carrying out the reads that is clearly not how things are going here.
+
+### 2026-04-16
+
+Unfortunately I keep fixating on `lastBlockIntegrityCheckOrCleanup` vs. `getSegmentIntegrity`. Perhaps I'm even 
+getting somewhere.
+
+The first time that `ClientShared.withFileLockDimensions` is called for a producer for `reallyLargeRead`, it is 
+called to just get a lock on the alleged final message. If `initialFileSize` is different from 
+`fileSizeOnceLockAcquired` that is actually alright because that just means the lock size handling is larger than it 
+needs to be (not that this is actually knowable at lock time). One thing to note - ~~right now on startup if the 
+segment isn't sound we're just giving up rather than~~
+
+Okay some things are coming back to me. The commented out `ProducerSegmentState.Cleanup(initialIntegrity.value)` in the 
+constructor is making me think there was some effort to move the cleanup code out of just the producer. What I don't 
+entirely know is what problem `ProducerSegmentState` solves or what thing it is supposed to express better. Like is 
+it better to keep the state expressed this way rather than calling functions with the `cleanupStartupOffset`? I'd 
+frankly like to remove mutable state, the producer state expressed this way is not crazy FP idiomatic but it is by 
+no means _bad_. This might be the type of thing that I need to break off into a separate branch to understand how 
+things look. I'm not sold on it and I wish I had a 'here is why the producer state enum is necessary' somwhere in 
+this readme.
 
 ### 2026-04-15
 
