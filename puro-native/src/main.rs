@@ -9,65 +9,94 @@ mod record {
     pub(crate) struct PuroRecord {
         pub topic: Vec<u8>,
         pub key: Vec<u8>,
-        pub value: Vec<u8>
+        pub value: Vec<u8>,
     }
 
     pub(crate) enum ControlTopic {
-        SegmentTombstone(vec!(0u8)),
-        InvalidBlock(vec!(1u8)),
-        BlockStart(vec!(2u8)),
-        BlockEnd(vec!(3u8))
+        SegmentTombstone(vec![0u8]),
+        InvalidBlock(vec![1u8]),
+        BlockStart(vec![2u8]),
+        BlockEnd(vec![3u8]),
+    }
+}
+
+mod segment {
+    use std::fs;
+    use std::fs::DirEntry;
+    use std::io::{Error, ErrorKind};
+    use std::path::Path;
+
+    const FILE_EXTENSION: &str = "puro";
+    const SEGMENT_PREFIX: &str = "stream";
+
+    fn segment_extension_match(entry: &DirEntry) -> bool {
+        entry.path().extension().map(|ext| ext.to_str().filter(|ext_str| ext_str.eq(FILE_EXTENSION))).is_some()
+    }
+
+    fn segment_prefix_match(entry: &DirEntry) -> bool {
+        entry.path().file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stm_str| match stm_str.strip_prefix(SEGMENT_PREFIX) {
+                Some(maybe_digit) if maybe_digit.parse::<u32>().is_ok() => Some(()),
+                _ => None
+            }).is_some()
+    }
+
+    pub fn get_highest_segment_order(dir: &Path) -> Result<Option<u32>, Error> {
+        if dir.is_dir() {
+            // TODO Use segment_extension_match, get_highest_segment_order
+            Ok(None)
+        } else {
+            // TODO get a better error type
+            Err(Error::from(ErrorKind::InvalidData))
+        }
     }
 }
 
 mod producer {
-    use std::path::Path;
-    use crate::producer::ProducerError::{BufferOverflow, IllegalRecord};
+    use crate::producer::ProducerError::IllegalRecord;
     use crate::record::PuroRecord;
+    use std::path::Path;
+    use std::sync::atomic::AtomicU32;
     struct Consumer {
         stream_directory: Path,
         maximum_write_batch_size: u32,
         read_buffer_size: u32,
-        current_segment_order: u32,
-        offset: u32,
+        current_segment_order: AtomicU32,
+        offset: AtomicU32,
         read_buffer: Vec<u8>,
-        state: ProducerSegmentState
+        state: ProducerSegmentState,
     }
 
     impl Consumer {
         // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
-        fn send_many(&mut self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
-
-            //0: Determine if request is legal
-            //1: Acquire file lock
-            //2: Check integrity of segment between offset and end-of-file if init, otherwise just signal bits
-            //3: Check length differential/determine if tombstoning necessary
-            //4: Write records
-            //5: Toggle signal bit
+        fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
+            //- Determine if request is legal
+            //- Acquire file lock
+            //- Check integrity of segment between offset and end-of-file if init, otherwise just
+            //      send signal bits and also check if tombstoned.
+            //- Check length differential/determine if tombstoning necessary
+            //- Write records
+            //- Toggle signal bit
 
             for puro_record in puro_records {
-                if(puro_record.key.is_empty() || puro_record.value.is_empty()) {
-                    return Err(IllegalRecord)
+                if (puro_record.key.is_empty() || puro_record.value.is_empty()) {
+                    return Err(IllegalRecord);
                 }
             }
             Ok(())
-        }
-
-
-        fn send_single(&mut self, puro_record: PuroRecord) -> Result<(), ProducerError> {
-            Self::send_many(self, vec!(puro_record))
         }
     }
 
     enum ProducerError {
         BufferOverflow,
-        IllegalRecord
+        IllegalRecord,
     }
 
     enum ProducerSegmentState {
         Init,
-        Ready {known_safe_offset: u32},
-        Cleanup {known_safe_offset: u32}
+        Ready { known_safe_offset: u32 },
+        Cleanup { known_safe_offset: u32 },
     }
 }
 
