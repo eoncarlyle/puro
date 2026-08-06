@@ -21,34 +21,68 @@ mod record {
 }
 
 mod segment {
-    use std::fs;
+    use std::any::type_name;
+    use std::{fs, io};
     use std::fs::DirEntry;
-    use std::io::{Error, ErrorKind};
     use std::path::Path;
+    use crate::segment::SegmentError::FileError;
+
+    pub enum SegmentError {
+        BadPath,
+        FileError,
+    }
 
     const FILE_EXTENSION: &str = "puro";
     const SEGMENT_PREFIX: &str = "stream";
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
-        entry.path().extension().map(|ext| ext.to_str().filter(|ext_str| ext_str.eq(FILE_EXTENSION))).is_some()
+        entry.path().is_file()
+            && entry
+                .path()
+                .extension()
+                .and_then(|ext| ext.to_str().filter(|ext_str| ext_str.eq(FILE_EXTENSION)))
+                .is_some()
     }
 
-    fn segment_prefix_match(entry: &DirEntry) -> bool {
-        entry.path().file_stem()
+    fn maybe_segment_order(entry: &DirEntry) -> Option<u32> {
+            Some(entry)
+            .filter(|entry| entry.path().is_file())
+            .path()
+            .file_stem()
             .and_then(|stem| stem.to_str())
             .and_then(|stm_str| match stm_str.strip_prefix(SEGMENT_PREFIX) {
-                Some(maybe_digit) if maybe_digit.parse::<u32>().is_ok() => Some(()),
-                _ => None
-            }).is_some()
+                Some(maybe_digit) => maybe_digit.parse::<u32>().ok(),
+                _ => None,
+            });
     }
 
-    pub fn get_highest_segment_order(dir: &Path) -> Result<Option<u32>, Error> {
-        if dir.is_dir() {
-            // TODO Use segment_extension_match, get_highest_segment_order
-            Ok(None)
+    // It is a little annoying that I have to define this seperate to get `?` workign with io results
+    pub fn inner_segment_order(stream_directory: &Path) -> io::Result<Option<u32>> {
+        let mut highest: Option<u32> = None;
+        for entry in fs::read_dir(stream_directory)? {
+            // I think this is wrong, because it will short-circuit on the first bad entry?
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() {
+                if segment_extension_match(&entry) {
+                    // A little wasteful to do this with
+                    let prefix = maybe_segment_order(&entry);
+                    if prefix.map(|this_order| highest.filter(|highest_order| highest_order > *this_order)) {
+                        highest = prefix;
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn get_highest_segment_order(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
+        if stream_directory.is_dir() {
+            inner_segment_order(stream_directory).map_err(Err(FileError))
         } else {
             // TODO get a better error type
-            Err(Error::from(ErrorKind::InvalidData))
+            Err(SegmentError::BadPath)
         }
     }
 }
