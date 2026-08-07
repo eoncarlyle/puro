@@ -13,73 +13,85 @@ mod record {
     }
 
     pub(crate) enum ControlTopic {
-        SegmentTombstone(vec![0u8]),
-        InvalidBlock(vec![1u8]),
-        BlockStart(vec![2u8]),
-        BlockEnd(vec![3u8]),
+        SegmentTombstone, //(vec![0u8]),
+        InvalidBlock,     //(vec![1u8]),
+        BlockStart,       //(vec![2u8]),
+        BlockEnd,         //(vec![3u8]),
     }
 }
 
 mod segment {
-    use std::any::type_name;
-    use std::{fs, io};
-    use std::fs::DirEntry;
-    use std::path::Path;
     use crate::segment::SegmentError::FileError;
+    use std::any::type_name;
+    use std::fs::DirEntry;
+    use std::io::Error;
+    use std::path::Path;
+    use std::{fs, io};
+    use crate::record::ControlTopic::SegmentTombstone;
 
     pub enum SegmentError {
         BadPath,
         FileError,
     }
 
+    impl From<Error> for SegmentError {
+        fn from(value: Error) -> Self {
+            FileError
+        }
+    }
+
     const FILE_EXTENSION: &str = "puro";
     const SEGMENT_PREFIX: &str = "stream";
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
-        entry.path().is_file()
-            && entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str().filter(|ext_str| ext_str.eq(FILE_EXTENSION)))
-                .is_some()
+        let path = entry.path();
+
+        if (!path.is_file()) {
+            false
+        } else {
+            let extension = path.extension().and_then(|os_str| os_str.to_str());
+            match extension {
+                Some(a) if a.eq(FILE_EXTENSION) => true,
+                _ => false
+            }
+        }
     }
 
     fn maybe_segment_order(entry: &DirEntry) -> Option<u32> {
-            Some(entry)
-            .filter(|entry| entry.path().is_file())
-            .path()
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .and_then(|stm_str| match stm_str.strip_prefix(SEGMENT_PREFIX) {
-                Some(maybe_digit) => maybe_digit.parse::<u32>().ok(),
-                _ => None,
-            });
-    }
-
-    // It is a little annoying that I have to define this seperate to get `?` workign with io results
-    pub fn inner_segment_order(stream_directory: &Path) -> io::Result<Option<u32>> {
-        let mut highest: Option<u32> = None;
-        for entry in fs::read_dir(stream_directory)? {
-            // I think this is wrong, because it will short-circuit on the first bad entry?
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_file() {
-                if segment_extension_match(&entry) {
-                    // A little wasteful to do this with
-                    let prefix = maybe_segment_order(&entry);
-                    if prefix.map(|this_order| highest.filter(|highest_order| highest_order > *this_order)) {
-                        highest = prefix;
-                    }
-                }
-            }
+        let path = entry.path();
+        if (!path.is_file()) {
+            None
+        } else {
+            let stem = path.file_stem()?;
+            let stem_str = stem.to_str()?;
+            let maybe_digit = stem_str.strip_prefix(SEGMENT_PREFIX)?;
+            maybe_digit.parse::<u32>().ok()
         }
-        Ok(None)
     }
 
     pub fn get_highest_segment_order(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
         if stream_directory.is_dir() {
-            inner_segment_order(stream_directory).map_err(Err(FileError))
+            let mut highest: Option<u32> = None;
+            for entry in fs::read_dir(stream_directory)? {
+                // I think this is wrong, because it will short-circuit on the first bad entry?
+                let entry = entry?;
+                let path = entry.path();
+
+                if path.is_file() {
+                    if segment_extension_match(&entry) {
+                        let prefix = maybe_segment_order(&entry);
+                        if prefix
+                            .and_then(|this_order| {
+                                highest.map(|highest_order| this_order < highest_order)
+                            })
+                            .is_some()
+                        {
+                            highest = prefix;
+                        }
+                    }
+                }
+            }
+            Ok(None)
         } else {
             // TODO get a better error type
             Err(SegmentError::BadPath)
@@ -92,8 +104,8 @@ mod producer {
     use crate::record::PuroRecord;
     use std::path::Path;
     use std::sync::atomic::AtomicU32;
-    struct Consumer {
-        stream_directory: Path,
+    struct Consumer<'a> {
+        stream_directory: &'a Path,
         maximum_write_batch_size: u32,
         read_buffer_size: u32,
         current_segment_order: AtomicU32,
@@ -102,7 +114,7 @@ mod producer {
         state: ProducerSegmentState,
     }
 
-    impl Consumer {
+    impl Consumer<'_> {
         // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
         fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
             //- Determine if request is legal
