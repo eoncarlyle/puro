@@ -3,8 +3,8 @@ mod record {
     const BLOCK_START_RECORD_SIZE: u8 = 10;
     const BLOCK_END_RECORD_SIZE: u8 = 9;
 
-    // Block start: signal bit value
-    // Block end:
+    // 10 MiB
+    const MAX_SIZE: u32 = 10485760;
 
     pub(crate) struct PuroRecord {
         pub topic: Vec<u8>,
@@ -20,14 +20,13 @@ mod record {
     }
 }
 
+
 mod segment {
     use crate::segment::SegmentError::FileError;
-    use std::any::type_name;
     use std::fs::DirEntry;
     use std::io::Error;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::{fs, io};
-    use crate::record::ControlTopic::SegmentTombstone;
 
     pub enum SegmentError {
         BadPath,
@@ -44,28 +43,27 @@ mod segment {
     const SEGMENT_PREFIX: &str = "stream";
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
-        let path = entry.path();
-
-        if (!path.is_file()) {
-            false
-        } else {
-            let extension = path.extension().and_then(|os_str| os_str.to_str());
-            match extension {
-                Some(a) if a.eq(FILE_EXTENSION) => true,
-                _ => false
+        match entry.path() {
+            path if path.is_file() => {
+                let extension = path.extension().and_then(|os_str| os_str.to_str());
+                match extension {
+                    Some(a) if a.eq(FILE_EXTENSION) => true,
+                    _ => false
+                }
             }
+            _ => false
         }
     }
 
     fn maybe_segment_order(entry: &DirEntry) -> Option<u32> {
-        let path = entry.path();
-        if (!path.is_file()) {
-            None
-        } else {
-            let stem = path.file_stem()?;
-            let stem_str = stem.to_str()?;
-            let maybe_digit = stem_str.strip_prefix(SEGMENT_PREFIX)?;
-            maybe_digit.parse::<u32>().ok()
+        match entry.path() {
+            path if path.is_file() =>  {
+                let stem = path.file_stem()?;
+                let stem_str = stem.to_str()?;
+                let maybe_digit = stem_str.strip_prefix(SEGMENT_PREFIX)?;
+                maybe_digit.parse::<u32>().ok()
+            }
+            _ => None
         }
     }
 
@@ -73,7 +71,6 @@ mod segment {
         if stream_directory.is_dir() {
             let mut highest: Option<u32> = None;
             for entry in fs::read_dir(stream_directory)? {
-                // I think this is wrong, because it will short-circuit on the first bad entry?
                 let entry = entry?;
                 let path = entry.path();
 
@@ -104,7 +101,7 @@ mod producer {
     use crate::record::PuroRecord;
     use std::path::Path;
     use std::sync::atomic::AtomicU32;
-    struct Consumer<'a> {
+    struct Producer<'a> {
         stream_directory: &'a Path,
         maximum_write_batch_size: u32,
         read_buffer_size: u32,
@@ -114,7 +111,7 @@ mod producer {
         state: ProducerSegmentState,
     }
 
-    impl Consumer<'_> {
+    impl Producer<'_> {
         // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
         fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
             //- Determine if request is legal

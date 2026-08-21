@@ -15,6 +15,31 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.08.20
+
+I was pretty wed to the idea of not having a stream header for any reason (which may have made sense when using VLQs)
+but without having some indication of the progress that has been made, there is no good alternative to new 
+consumers having to stop the entire segment in order to check integrity. The better option is to bite the bullet and 
+include the 
+
+Block start format
+- First byte: Either `bx11110000`/`0xF0` or `bxc01110000`/`0x70`, the prior if active and the former if inactive.
+- Next three bytes: First unverified offset (reading should be start of block)
+- Block start message
+  - First byte: block start Crc8
+  - Next three bytes: subrecord length
+  - Next three bytes: topic length
+  - Next byte: topic (special: block start, otherwise variable)
+  - Next three bytes: key length (special: 0)
+  - Next zero bytes: key (zero)
+  - Remaining bytes: signal bit followed by int32 length of subblock
+
+`10485760` is 10MiB and fits in 24 bits. That is the largest number that should exist in a message unless If
+
+
+- A block needs to be smaller than an int32 otherwise will fill up whole segment, and the largest problem is how the 
+  signal bits work in bleeding over
+
 ## 2026.08.06
 
 Bill told me about using the `From<T>` trait which helps. Also, it seems that the question mark operator is simply 
