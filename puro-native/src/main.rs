@@ -20,17 +20,20 @@ mod record {
     }
 }
 
-
 mod segment {
-    use crate::segment::SegmentError::FileError;
-    use std::fs::DirEntry;
-    use std::io::Error;
+    use crate::record::ControlTopic::SegmentTombstone;
+    use crate::segment::SegmentError::{FileError, MangledSegment};
+    use file_guard::Lock;
+    use std::fs::{DirEntry, OpenOptions};
+    use std::io::{Error, ErrorKind, Read};
     use std::path::{Path, PathBuf};
     use std::{fs, io};
 
     pub enum SegmentError {
         BadPath,
         FileError,
+        DuplicateActiveSegments,
+        MangledSegment,
     }
 
     impl From<Error> for SegmentError {
@@ -48,98 +51,120 @@ mod segment {
                 let extension = path.extension().and_then(|os_str| os_str.to_str());
                 match extension {
                     Some(a) if a.eq(FILE_EXTENSION) => true,
-                    _ => false
+                    _ => false,
                 }
             }
-            _ => false
+            _ => false,
         }
     }
 
     fn maybe_segment_order(entry: &DirEntry) -> Option<u32> {
         match entry.path() {
-            path if path.is_file() =>  {
+            path if path.is_file() => {
                 let stem = path.file_stem()?;
                 let stem_str = stem.to_str()?;
                 let maybe_digit = stem_str.strip_prefix(SEGMENT_PREFIX)?;
                 maybe_digit.parse::<u32>().ok()
             }
-            _ => None
+            _ => None,
         }
     }
 
-    pub fn get_highest_segment_order(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
+    pub fn get_active_segment(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
         if stream_directory.is_dir() {
-            let mut highest: Option<u32> = None;
+            let mut active: Option<u32> = None;
             for entry in fs::read_dir(stream_directory)? {
                 let entry = entry?;
                 let path = entry.path();
 
                 if path.is_file() {
                     if segment_extension_match(&entry) {
-                        let prefix = maybe_segment_order(&entry);
-                        if prefix
-                            .and_then(|this_order| {
-                                highest.map(|highest_order| this_order < highest_order)
-                            })
-                            .is_some()
-                        {
-                            highest = prefix;
-                        }
+                        if let Some(order) = maybe_segment_order(&entry) {
+                            let r_first_byte = OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .create(false)
+                                .open(stream_directory.join(format!(
+                                    "{}{}.{}",
+                                    SEGMENT_PREFIX, order, FILE_EXTENSION
+                                )))
+                                .and_then(|mut file| {
+                                    file_guard::lock(&mut file, Lock::Shared, 0, 4)
+                                })
+                                .and_then(|guard| {
+                                    let file = *guard;
+                                    let mut buf = [0u8; 1];
+                                    let read = file.read_exact(&mut buf);
+                                    read.map(|_| buf[0])
+                                });
+
+                            let result = match (active, r_first_byte) {
+                                (_, Err(_)) => Err(FileError), //TODO lame and you know it
+                                (Some(active), Ok(0xF0)) => Err(SegmentError::DuplicateActiveSegments),
+                                (None, Ok(0xF0)) => Ok(true),
+                                (_, Ok(0x70)) => Ok(false),
+                                _ => Err(MangledSegment),
+                            };
+
+                            match result {
+                                Err(err) => return Err(err),
+                                Some(true) => active = Some(order)
+                            }
+                        };
                     }
                 }
             }
-            Ok(None)
+            Ok(active)
         } else {
             // TODO get a better error type
             Err(SegmentError::BadPath)
         }
     }
-}
 
-mod producer {
-    use crate::producer::ProducerError::IllegalRecord;
-    use crate::record::PuroRecord;
-    use std::path::Path;
-    use std::sync::atomic::AtomicU32;
-    struct Producer<'a> {
-        stream_directory: &'a Path,
-        maximum_write_batch_size: u32,
-        read_buffer_size: u32,
-        current_segment_order: AtomicU32,
-        offset: AtomicU32,
-        read_buffer: Vec<u8>,
-        state: ProducerSegmentState,
-    }
-
-    impl Producer<'_> {
-        // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
-        fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
-            //- Determine if request is legal
-            //- Acquire file lock
-            //- Check integrity of segment between offset and end-of-file if init, otherwise just
-            //      send signal bits and also check if tombstoned.
-            //- Check length differential/determine if tombstoning necessary
-            //- Write records
-            //- Toggle signal bit
-
-            for puro_record in puro_records {
-                if (puro_record.key.is_empty() || puro_record.value.is_empty()) {
-                    return Err(IllegalRecord);
-                }
-            }
-            Ok(())
+    mod producer {
+        use crate::record::PuroRecord;
+        use std::path::Path;
+        use std::sync::atomic::AtomicU32;
+        struct Producer<'a> {
+            stream_directory: &'a Path,
+            maximum_write_batch_size: u32,
+            read_buffer_size: u32,
+            current_segment_order: AtomicU32,
+            offset: AtomicU32,
+            read_buffer: Vec<u8>,
+            state: ProducerSegmentState,
         }
-    }
 
-    enum ProducerError {
-        BufferOverflow,
-        IllegalRecord,
-    }
+        impl Producer<'_> {
+            // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
+            fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
+                //- Determine if request is legal
+                //- Acquire file lock
+                //- Check integrity of segment between offset and end-of-file if init, otherwise just
+                //      send signal bits and also check if tombstoned.
+                //- Check length differential/determine if tombstoning necessary
+                //- Write records
+                //- Toggle signal bit
 
-    enum ProducerSegmentState {
-        Init,
-        Ready { known_safe_offset: u32 },
-        Cleanup { known_safe_offset: u32 },
+                for puro_record in puro_records {
+                    if (puro_record.key.is_empty() || puro_record.value.is_empty()) {
+                        return Err(ProducerError::IllegalRecord);
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        pub(crate) enum ProducerError {
+            BufferOverflow,
+            IllegalRecord,
+        }
+
+        enum ProducerSegmentState {
+            Init,
+            Ready { known_safe_offset: u32 },
+            Cleanup { known_safe_offset: u32 },
+        }
     }
 }
 
