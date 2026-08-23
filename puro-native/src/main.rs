@@ -168,6 +168,31 @@ mod segment {
     }
 }
 
+#[cfg(test)]
+mod segment_test {
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
+    use std::thread::spawn;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_active_segment_happy_path() {
+        let dir = TempDir::new().expect("Temporary directory creation failed");
+
+        let mut segment0 = File::create(&Path::new("segment0.puro")).expect("Segment creation failed");
+        let mut segment1 = File::create(&Path::new("segment1.puro")).expect("Segment creation failed");
+        let mut segment2 = File::create(&Path::new("segment2.puro")).expect("Segment creation failed");
+        let spurious = File::create(&Path::new("spurious.txt")).expect("Spurious file creation failed");
+
+        segment0.write_all(&*[0x70, 0x00, 0x00, 0x0F]).expect("Segment write failed");
+        segment1.write_all(&*[0x70, 0x00, 0x00, 0x0F]).expect("Segment write failed");
+        segment2.write_all(&*[0xF0, 0x00, 0x00, 0x0F]).expect("Segment write failed");
+
+        // TODO: two simultaneous threads running the function
+    }
+}
+
 fn main() {
     let a = [1, 2, 3, 4, 5];
     println!("Hello, world!");
