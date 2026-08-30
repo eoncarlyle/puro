@@ -21,7 +21,6 @@ mod record {
 }
 
 mod segment {
-    use crate::record::ControlTopic::SegmentTombstone;
     use crate::segment::SegmentError::{FileError, MangledSegment};
     use file_guard::Lock;
     use std::fs::{DirEntry, OpenOptions};
@@ -29,6 +28,7 @@ mod segment {
     use std::path::{Path, PathBuf};
     use std::{fs, io};
 
+    #[derive(Clone)]
     pub enum SegmentError {
         BadPath,
         FileError,
@@ -43,7 +43,7 @@ mod segment {
     }
 
     const FILE_EXTENSION: &str = "puro";
-    const SEGMENT_PREFIX: &str = "stream";
+    const SEGMENT_PREFIX: &str = "segment";
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
         match entry.path() {
@@ -72,49 +72,59 @@ mod segment {
 
     pub fn get_active_segment(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
         if stream_directory.is_dir() {
-            let mut active: Option<u32> = None;
+            let mut active: Result<Option<u32>, SegmentError> = Ok(None);
             for entry in fs::read_dir(stream_directory)? {
-                let entry = entry?;
-                let path = entry.path();
+                // TODO not really sure if `if let` is the best way here
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if segment_extension_match(&entry) {
+                            if let Some(order) = maybe_segment_order(&entry) {
+                                let r_first_byte = OpenOptions::new()
+                                    .read(true)
+                                    .write(true)
+                                    .create(false)
+                                    .open(stream_directory.join(format!(
+                                        "{}{}.{}",
+                                        SEGMENT_PREFIX, order, FILE_EXTENSION
+                                    )))
+                                    .and_then(|mut file| {
+                                        let r_guard =
+                                            file_guard::lock(&mut file, Lock::Shared, 0, 4);
 
-                if path.is_file() {
-                    if segment_extension_match(&entry) {
-                        if let Some(order) = maybe_segment_order(&entry) {
-                            let r_first_byte = OpenOptions::new()
-                                .read(true)
-                                .write(true)
-                                .create(false)
-                                .open(stream_directory.join(format!(
-                                    "{}{}.{}",
-                                    SEGMENT_PREFIX, order, FILE_EXTENSION
-                                )))
-                                .and_then(|mut file| {
-                                    file_guard::lock(&mut file, Lock::Shared, 0, 4)
-                                })
-                                .and_then(|guard| {
-                                    let file = *guard;
-                                    let mut buf = [0u8; 1];
-                                    let read = file.read_exact(&mut buf);
-                                    read.map(|_| buf[0])
-                                });
+                                        match r_guard {
+                                            Ok(mut guard) => {
+                                                let mut buf = [0u8; 1];
+                                                guard.read_exact(&mut buf).map(|_| buf[0])
+                                            }
+                                            Err(err) => Err(err),
+                                        }
+                                    });
 
-                            let result = match (active, r_first_byte) {
-                                (_, Err(_)) => Err(FileError), //TODO lame and you know it
-                                (Some(active), Ok(0xF0)) => Err(SegmentError::DuplicateActiveSegments),
-                                (None, Ok(0xF0)) => Ok(true),
-                                (_, Ok(0x70)) => Ok(false),
-                                _ => Err(MangledSegment),
-                            };
+                                let result = match (active.clone(), r_first_byte) {
+                                    (_, Err(_)) => Err(FileError), //TODO lame and you know it
+                                    (Ok(Some(_)), Ok(0xF0)) => {
+                                        Err(SegmentError::DuplicateActiveSegments)
+                                    }
+                                    (Ok(None), Ok(0xF0)) => Ok(true),
+                                    (_, Ok(0x70)) => Ok(false),
+                                    _ => Err(MangledSegment),
+                                };
 
-                            match result {
-                                Err(err) => return Err(err),
-                                Some(true) => active = Some(order)
+                                match result {
+                                    Ok(true) => active = Ok(Some(order)),
+                                    Err(e) => {
+                                        active = Err(e);
+                                        break;
+                                    }
+                                    _ => (),
+                                }
                             }
-                        };
+                        }
                     }
                 }
             }
-            Ok(active)
+            active
         } else {
             // TODO get a better error type
             Err(SegmentError::BadPath)
@@ -147,7 +157,7 @@ mod segment {
                 //- Toggle signal bit
 
                 for puro_record in puro_records {
-                    if (puro_record.key.is_empty() || puro_record.value.is_empty()) {
+                    if puro_record.key.is_empty() || puro_record.value.is_empty() {
                         return Err(ProducerError::IllegalRecord);
                     }
                 }
@@ -170,26 +180,40 @@ mod segment {
 
 #[cfg(test)]
 mod segment_test {
+    use crate::segment::get_active_segment;
     use std::fs::File;
     use std::io::Write;
     use std::path::Path;
-    use std::thread::spawn;
     use tempfile::TempDir;
 
     #[test]
     fn test_active_segment_happy_path() {
         let dir = TempDir::new().expect("Temporary directory creation failed");
 
-        let mut segment0 = File::create(&Path::new("segment0.puro")).expect("Segment creation failed");
-        let mut segment1 = File::create(&Path::new("segment1.puro")).expect("Segment creation failed");
-        let mut segment2 = File::create(&Path::new("segment2.puro")).expect("Segment creation failed");
-        let spurious = File::create(&Path::new("spurious.txt")).expect("Spurious file creation failed");
+        let mut segment0 =
+            File::create(dir.path().join("segment0.puro")).expect("Segment creation failed");
+        let mut segment1 =
+            File::create(dir.path().join("segment1.puro")).expect("Segment creation failed");
+        let mut segment2 =
+            File::create(dir.path().join("segment2.puro")).expect("Segment creation failed");
+        File::create(&Path::new("spurious.txt")).expect("Spurious file creation failed");
 
-        segment0.write_all(&*[0x70, 0x00, 0x00, 0x0F]).expect("Segment write failed");
-        segment1.write_all(&*[0x70, 0x00, 0x00, 0x0F]).expect("Segment write failed");
-        segment2.write_all(&*[0xF0, 0x00, 0x00, 0x0F]).expect("Segment write failed");
+        segment0
+            .write_all(&[0x70, 0x00, 0x00, 0x0F])
+            .expect("Segment write failed");
+        segment1
+            .write_all(&[0x70, 0x00, 0x00, 0x0F])
+            .expect("Segment write failed");
+        segment2
+            .write_all(&[0xF0, 0x00, 0x00, 0x0F])
+            .expect("Segment write failed");
 
-        // TODO: two simultaneous threads running the function
+        let r_segment = get_active_segment(dir.path());
+
+        assert!(match r_segment {
+            Ok(Some(2)) => true,
+            _ => false,
+        })
     }
 }
 

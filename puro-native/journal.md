@@ -15,6 +15,10 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.08.30
+
+Use `hexdump -C` instead, turns out the segment writes were fine
+
 ## 2026.08.20
 
 I was pretty wed to the idea of not having a stream header for any reason (which may have made sense when using VLQs)
