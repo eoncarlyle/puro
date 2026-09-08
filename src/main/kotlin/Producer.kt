@@ -14,7 +14,7 @@ class Producer {
     val streamDirectory: Path
     val maximumWriteBatchSize: Int
     val readBufferSize: Int
-    private var currentSegmentOrder: Int
+    private var currentSegmentOrder:Int
     private var offset: Int
     private val readBuffer: ByteBuffer
     private var logger: Logger = NOPLogger.NOP_LOGGER

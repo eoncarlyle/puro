@@ -21,9 +21,11 @@ mod record {
 }
 
 mod segment {
+    use crate::record::PuroRecord;
     use crate::segment::SegmentError::{FileError, MangledSegment};
+    use crate::segment::producer::ProducerError;
     use file_guard::Lock;
-    use std::fs::{DirEntry, OpenOptions};
+    use std::fs::{DirEntry, File, OpenOptions};
     use std::io::{Error, ErrorKind, Read};
     use std::path::{Path, PathBuf};
     use std::{fs, io};
@@ -44,6 +46,9 @@ mod segment {
 
     const FILE_EXTENSION: &str = "puro";
     const SEGMENT_PREFIX: &str = "segment";
+
+    const ACTIVE_SEGMENT_KEY: u8 = 0xF0;
+    const INACTIVE_SEGMENT_KEY: u8 = 0x70;
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
         match entry.path() {
@@ -70,6 +75,8 @@ mod segment {
         }
     }
 
+    // This function is only really safe to run in static contexts, because locks are not held
+    // while evaluating segment status. This makes it race condition prone.
     pub fn get_active_segment(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
         if stream_directory.is_dir() {
             let mut active: Result<Option<u32>, SegmentError> = Ok(None);
@@ -80,18 +87,10 @@ mod segment {
                     if path.is_file() {
                         if segment_extension_match(&entry) {
                             if let Some(order) = maybe_segment_order(&entry) {
-                                let r_first_byte = OpenOptions::new()
-                                    .read(true)
-                                    .write(true)
-                                    .create(false)
-                                    .open(stream_directory.join(format!(
-                                        "{}{}.{}",
-                                        SEGMENT_PREFIX, order, FILE_EXTENSION
-                                    )))
+                                let r_first_segment_byte = open_segment(stream_directory, order)
                                     .and_then(|mut file| {
                                         let r_guard =
                                             file_guard::lock(&mut file, Lock::Shared, 0, 4);
-
                                         match r_guard {
                                             Ok(mut guard) => {
                                                 let mut buf = [0u8; 1];
@@ -101,13 +100,13 @@ mod segment {
                                         }
                                     });
 
-                                let result = match (active.clone(), r_first_byte) {
+                                let result = match (active.clone(), r_first_segment_byte) {
                                     (_, Err(_)) => Err(FileError), //TODO lame and you know it
-                                    (Ok(Some(_)), Ok(0xF0)) => {
+                                    (Ok(Some(_)), Ok(ACTIVE_SEGMENT_KEY)) => {
                                         Err(SegmentError::DuplicateActiveSegments)
                                     }
-                                    (Ok(None), Ok(0xF0)) => Ok(true),
-                                    (_, Ok(0x70)) => Ok(false),
+                                    (Ok(None), Ok(ACTIVE_SEGMENT_KEY)) => Ok(true),
+                                    (_, Ok(INACTIVE_SEGMENT_KEY)) => Ok(false),
                                     _ => Err(MangledSegment),
                                 };
 
@@ -131,18 +130,50 @@ mod segment {
         }
     }
 
+    fn open_segment(stream_directory: &Path, segment_order: u32) -> io::Result<File> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(false)
+            .open(stream_directory.join(format!(
+                "{}{}.{}",
+                SEGMENT_PREFIX, segment_order, FILE_EXTENSION
+            )))
+    }
+
     mod producer {
         use crate::record::PuroRecord;
+        use crate::segment::{maybe_segment_order, open_segment};
+        use file_guard::Lock;
+        use std::fs::File;
+        use std::io::{Error, ErrorKind};
         use std::path::Path;
         use std::sync::atomic::AtomicU32;
+        use std::{fs, io};
+
         struct Producer<'a> {
             stream_directory: &'a Path,
-            maximum_write_batch_size: u32,
-            read_buffer_size: u32,
+            maximum_write_batch_size: u16, //In records, not bytes
             current_segment_order: AtomicU32,
             offset: AtomicU32,
             read_buffer: Vec<u8>,
             state: ProducerSegmentState,
+        }
+
+        //TODO: Need to do validation on the read_buffer
+        fn new(
+            stream_directory: &Path,
+            maybe_maximum_write_batch_size: Option<u16>,
+            read_buffer: Vec<u8>,
+        ) -> Producer {
+            Producer {
+                stream_directory,
+                maximum_write_batch_size: maybe_maximum_write_batch_size.unwrap_or(8192),
+                current_segment_order: AtomicU32::new(0),
+                offset: AtomicU32::new(0),
+                read_buffer,
+                state: ProducerSegmentState::Init,
+            }
         }
 
         impl Producer<'_> {
@@ -155,6 +186,7 @@ mod segment {
                 //- Check length differential/determine if tombstoning necessary
                 //- Write records
                 //- Toggle signal bit
+                //- Bump length
 
                 for puro_record in puro_records {
                     if puro_record.key.is_empty() || puro_record.value.is_empty() {
@@ -163,11 +195,44 @@ mod segment {
                 }
                 Ok(())
             }
+
+            pub fn with_active_segment<F>(self, func: F) -> Result<(), ProducerError>
+            where
+                F: Fn(Vec<PuroRecord>) -> Result<(), ProducerError>,
+            {
+                let orders: Result<Vec<u32>, io::Error> =
+                    fs::read_dir(self.stream_directory).map(|res| {
+                        res.filter_map(|entry| entry.ok().and_then(|e| maybe_segment_order(&e)))
+                            .collect()
+                    });
+
+                let r_files: Result<Vec<io::Result<File>>, Error> = orders.map(|res| {
+                    res.iter()
+                        .map(|order| {
+                            let stream_directory = self.stream_directory;
+                            open_segment(stream_directory, *order)
+                        })
+                        .collect()
+                });
+
+                let r_locks: Result<Vec<_>, _> = r_files.map(|files| {
+                    files
+                        .iter()
+                        .map(|mut r_file| match r_file {
+                            Ok(mut file) => file_guard::lock(&mut file, Lock::Exclusive, 0, 4),
+                            _ =>  Err(ErrorKind::InvalidData.into())
+                        })
+                        .collect()
+                });
+
+                Ok(())
+            }
         }
 
         pub(crate) enum ProducerError {
             BufferOverflow,
             IllegalRecord,
+            IllegalSegments,
         }
 
         enum ProducerSegmentState {

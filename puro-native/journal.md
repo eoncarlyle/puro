@@ -15,6 +15,20 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.09.07
+I've been trying to think through how acquiring the segment lock is supposed to work. We can't just acquire the 
+active segment and continue after relinquishing the lock, because the active segment can change between when one 
+producer determines the active segment and when it starts writing. So the actual event production needs to happen as 
+the producer has the locks. As I'm writing this I don't see any problem with the producer locking _all_ files in one 
+go. Á la that one 'Little Book of Sempahores' chapter the order that the producer needs to acquire the locks needs 
+to be deterministic and also the same across all producers, but that isn't hard to guarantee.
+
+
+
+It is worth pointing this out explicitly, but the unverified offset is a lower priority change than anything else; 
+if the unverified offset isn't changed it doesn't break anything and just forces more work to be done by a 
+subsequent producer.
+
 ## 2026.08.30
 
 Use `hexdump -C` instead, turns out the segment writes were fine
