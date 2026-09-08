@@ -144,7 +144,6 @@ mod segment {
     mod producer {
         use crate::record::PuroRecord;
         use crate::segment::SegmentError::FileError;
-        use crate::segment::producer::ProducerError::PleaseChangeMeSomeday;
         use crate::segment::{maybe_segment_order, open_segment};
         use file_guard::Lock;
         use std::fs::File;
@@ -208,28 +207,18 @@ mod segment {
                             .collect()
                     });
 
-                let _files: Vec<File> = orders
+                let files: Vec<File> = orders
                     .and_then(|ords| {
                     ords.iter()
                         .map(|order| open_segment(self.stream_directory, *order))
                         .collect::<io::Result<Vec<File>>>()
-                })?;
-
-                let files: Vec<io::Result<File>> = orders.map(|res| {
-                    res.iter()
-                        .map(|order| open_segment(self.stream_directory, *order))
-                        .collect()
-                })?;
-
+                }).map_err(|_| ProducerError::Io)?;
 
 
                 let r_locks: Result<Vec<_>, _> = files
                     .iter()
                     //.map(|file| file_guard::lock(file, Lock::Exclusive, 0, 4))
-                    .map(|r_file| match r_file {
-                        Ok(file) => file_guard::lock(file, Lock::Exclusive, 0, 4),
-                        _ => Err(ErrorKind::InvalidData.into()),
-                    })
+                    .map(|file| file_guard::lock(file, Lock::Exclusive, 0, 4))
                     .collect();
 
                 Ok(())
@@ -240,13 +229,7 @@ mod segment {
             BufferOverflow,
             IllegalRecord,
             IllegalSegments,
-            PleaseChangeMeSomeday,
-        }
-
-        impl From<Error> for ProducerError {
-            fn from(value: Error) -> Self {
-                PleaseChangeMeSomeday
-            }
+            Io
         }
 
         enum ProducerSegmentState {
