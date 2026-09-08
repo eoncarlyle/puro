@@ -24,10 +24,28 @@ go. Á la that one 'Little Book of Sempahores' chapter the order that the produc
 to be deterministic and also the same across all producers, but that isn't hard to guarantee.
 
 
-
 It is worth pointing this out explicitly, but the unverified offset is a lower priority change than anything else; 
 if the unverified offset isn't changed it doesn't break anything and just forces more work to be done by a 
 subsequent producer.
+
+Learning Rust note
+
+```rust
+    //This short circuits
+    let _files: Vec<File> = orders
+        .and_then(|ords| {
+        ords.iter()
+            .map(|order| open_segment(self.stream_directory, *order))
+            .collect::<io::Result<Vec<File>>>()
+    })?;
+
+    //THis is way more annoying and wrong
+    let files: Vec<io::Result<File>> = orders.map(|res| {
+        res.iter()
+            .map(|order| open_segment(self.stream_directory, *order))
+            .collect()
+    })?;
+```
 
 ## 2026.08.30
 
