@@ -21,13 +21,11 @@ mod record {
 }
 
 mod segment {
-    use crate::record::PuroRecord;
     use crate::segment::SegmentError::{FileError, MangledSegment};
-    use crate::segment::producer::ProducerError;
     use file_guard::Lock;
     use std::fs::{DirEntry, File, OpenOptions};
-    use std::io::{Error, ErrorKind, Read};
-    use std::path::{Path, PathBuf};
+    use std::io::{Error, Read};
+    use std::path::Path;
     use std::{fs, io};
 
     #[derive(Clone)]
@@ -145,12 +143,13 @@ mod segment {
         use crate::record::PuroRecord;
         use crate::segment::SegmentError::FileError;
         use crate::segment::{maybe_segment_order, open_segment};
-        use file_guard::Lock;
+        use file_guard::{Lock, FileGuard};
         use std::fs::File;
-        use std::io::{Error, ErrorKind};
         use std::path::Path;
         use std::sync::atomic::AtomicU32;
         use std::{fs, io};
+        use std::io::Read;
+        use crate::segment::producer::ProducerError::Io;
 
         struct Producer<'a> {
             stream_directory: &'a Path,
@@ -207,6 +206,7 @@ mod segment {
                             .collect()
                     });
 
+
                 let files: Vec<File> = orders
                     .and_then(|ords| {
                     ords.iter()
@@ -215,11 +215,24 @@ mod segment {
                 }).map_err(|_| ProducerError::Io)?;
 
 
-                let r_locks: Result<Vec<_>, _> = files
+                let maybe_locks = files
                     .iter()
-                    //.map(|file| file_guard::lock(file, Lock::Exclusive, 0, 4))
-                    .map(|file| file_guard::lock(file, Lock::Exclusive, 0, 4))
-                    .collect();
+                    .map(|file| file_guard::lock(file, Lock::Exclusive, 0, 4).ok())
+                    .collect::<Vec<_>>();
+
+                if maybe_locks.iter().any(Option::is_none) {
+                    // There's probably a better way to do this
+                    return Err(Io);
+                }
+
+                let guards = maybe_locks.iter().flat_map(Option::iter).map(|a| *a).collect::<Vec<_>>();
+
+                for guard in guards.iter() {
+                    let mut buf = [0u8; 1];
+                    guard.read_exact(&mut buf)
+                }
+
+                let mut active: Option<u32> = None;
 
                 Ok(())
             }
