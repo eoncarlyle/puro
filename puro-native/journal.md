@@ -15,6 +15,27 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.09.10
+
+The following didn't work because file guard isn't implementing a required trait
+
+```rust
+let _guards = maybe_locks
+    .iter()
+    .flat_map(Option::iter)
+    .map(|mut m| {
+        let mut buf = [0u8; 1];
+        let n = m.read_exact(&mut buf);
+        buf
+    })
+    .collect::<Vec<_>>();
+```
+
+This is actually a situation where the compiler pointed out the issue
+```text
+    = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `FileGuard<&File>`
+```
+
 ## 2026.09.07
 I've been trying to think through how acquiring the segment lock is supposed to work. We can't just acquire the 
 active segment and continue after relinquishing the lock, because the active segment can change between when one 

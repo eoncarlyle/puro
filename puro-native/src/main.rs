@@ -142,14 +142,14 @@ mod segment {
     mod producer {
         use crate::record::PuroRecord;
         use crate::segment::SegmentError::FileError;
+        use crate::segment::producer::ProducerError::Io;
         use crate::segment::{maybe_segment_order, open_segment};
-        use file_guard::{Lock, FileGuard};
+        use file_guard::{FileGuard, Lock};
         use std::fs::File;
+        use std::io::Read;
         use std::path::Path;
         use std::sync::atomic::AtomicU32;
         use std::{fs, io};
-        use std::io::Read;
-        use crate::segment::producer::ProducerError::Io;
 
         struct Producer<'a> {
             stream_directory: &'a Path,
@@ -196,7 +196,7 @@ mod segment {
                 Ok(())
             }
 
-            pub fn with_active_segment<F>(self, func: F) -> Result<(), ProducerError>
+            pub fn with_active_segment<F>(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError>
             where
                 F: Fn(Vec<PuroRecord>) -> Result<(), ProducerError>,
             {
@@ -206,14 +206,13 @@ mod segment {
                             .collect()
                     });
 
-
                 let files: Vec<File> = orders
                     .and_then(|ords| {
-                    ords.iter()
-                        .map(|order| open_segment(self.stream_directory, *order))
-                        .collect::<io::Result<Vec<File>>>()
-                }).map_err(|_| ProducerError::Io)?;
-
+                        ords.iter()
+                            .map(|order| open_segment(self.stream_directory, *order))
+                            .collect::<io::Result<Vec<File>>>()
+                    })
+                    .map_err(|_| ProducerError::Io)?;
 
                 let maybe_locks = files
                     .iter()
@@ -225,12 +224,27 @@ mod segment {
                     return Err(Io);
                 }
 
-                let guards = maybe_locks.iter().flat_map(Option::iter).map(|a| *a).collect::<Vec<_>>();
+                let first_bytes = maybe_locks
+                    .iter()
+                    .flat_map(Option::iter)
+                    .map(|guard| {
+                        let mut file_ref: &File = **guard;
+                        let mut buf = [0u8; 1];
+                        let _ = file_ref.read_exact(&mut buf);
+                        buf
+                    })
+                    .collect::<Vec<_>>();
 
-                for guard in guards.iter() {
-                    let mut buf = [0u8; 1];
-                    guard.read_exact(&mut buf)
-                }
+                //let guards = maybe_locks
+                //    .iter()
+                //    .flat_map(Option::iter)
+                //    .collect::<Vec<_>>();
+
+                //for guard in guards.iter() {
+                //    let mut buf = [0u8; 1];
+                //    let a = *guard;
+                //    a.read_exact(&mut buf);
+                //}
 
                 let mut active: Option<u32> = None;
 
@@ -242,7 +256,7 @@ mod segment {
             BufferOverflow,
             IllegalRecord,
             IllegalSegments,
-            Io
+            Io,
         }
 
         enum ProducerSegmentState {
