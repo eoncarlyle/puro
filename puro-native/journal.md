@@ -39,15 +39,18 @@ let first_byte_pairs: Vec<([u8; 1], &File, u32)>;
 ```
 
 A few things I am thinking about
-- I don't exactly know the best way to do large file reads is. Is it cursors or continued
 - I don't _think_ endianness matters to me because I am doing byte-order operations
 - Block size must be heeded
 - Rather than providing a read buffer as a vector, we could simply allocate a buffer up to 16384 in size and only 
   use a user specified amount of it. It will be easy to use more than what the user specified and I worry that this 
-  will be the source of byte-buffer styled bugs. But I like the elegance of keeping things stack allocated.
+  will be the source of byte-buffer styled bugs. But I like the elegance of keeping things stack allocated: yeah, 
+  let's do it this way
 - ~~I am worried about the `fsync` of it all.~~ update: this is taken care of by `File.sync_all`.
 - Should read and write operations have seperate buffers? It might be possible to populate a write buffer while 
   other operations are going on.
+- I don't exactly know the best way to do large file reads is. Should I use cursors? What's the best way to be
+  careful about those mentioned read buffer sizes? 
+- `File.take` is a little less annoying than `File.read_exact`
 
 ## 2026.09.10
 
