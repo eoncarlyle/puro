@@ -24,8 +24,30 @@ often times all that is necessary is a reference rather than an owned value. Als
 Also, there is a real question as to if the active segment needs to be stored on the producers and the consumers if 
 it will always be inferred from the segment state. This _could_ be used to speed up calculations - but that is a 
 later consideration which I can TODO. Given that 'byzantine' (for lack of more specific term) consistency isn't my 
-target, I think it is overkill to _then_ check for other segment activity
+target, I think it is overkill to _then_ check for other segment activity.
 
+The thing that I need to remember about the segment start offset is that it the softest requirement: updating block 
+start messages/offsets is a greater priority than the block start segments. Well behaved producers will never update 
+that segment offset unless they A) confirm existing segment health and increment or B) repair the segment and modify.
+It is to _help_ producers, is is _not_ a strong health measure in and of itself.
+
+This is a `&File` and I'm not crazy comfortable with that; the last thing I want is for the guard to get dropped and 
+for it to allow for unlocked writes:
+
+```rust
+let first_byte_pairs: Vec<([u8; 1], &File, u32)>;
+```
+
+A few things I am thinking about
+- I don't exactly know the best way to do large file reads is. Is it cursors or continued
+- I don't _think_ endianness matters to me because I am doing byte-order operations
+- Block size must be heeded
+- Rather than providing a read buffer as a vector, we could simply allocate a buffer up to 16384 in size and only 
+  use a user specified amount of it. It will be easy to use more than what the user specified and I worry that this 
+  will be the source of byte-buffer styled bugs. But I like the elegance of keeping things stack allocated.
+- ~~I am worried about the `fsync` of it all.~~ update: this is taken care of by `File.sync_all`.
+- Should read and write operations have seperate buffers? It might be possible to populate a write buffer while 
+  other operations are going on.
 
 ## 2026.09.10
 

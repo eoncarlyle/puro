@@ -25,7 +25,7 @@ mod segment {
     use file_guard::Lock;
     use std::fs::{DirEntry, File, OpenOptions};
     use std::io::{Error, Read};
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::{fs, io};
 
     // Note: I dn';
@@ -62,8 +62,12 @@ mod segment {
         }
     }
 
-    fn maybe_segment_order(entry: &DirEntry) -> Option<u32> {
-        match entry.path() {
+    fn maybe_segment_order_from_dir(entry: &DirEntry) -> Option<u32> {
+        maybe_segment_order_from_path(entry.path())
+    }
+
+    fn maybe_segment_order_from_path(path: PathBuf) -> Option<u32> {
+        match path {
             path if path.is_file() => {
                 let stem = path.file_stem()?;
                 let stem_str = stem.to_str()?;
@@ -85,7 +89,7 @@ mod segment {
                     let path = entry.path();
                     if path.is_file() {
                         if segment_extension_match(&entry) {
-                            if let Some(order) = maybe_segment_order(&entry) {
+                            if let Some(order) = maybe_segment_order_from_dir(&entry) {
                                 let r_first_segment_byte = open_segment(stream_directory, order)
                                     .and_then(|mut file| {
                                         let r_guard =
@@ -144,20 +148,27 @@ mod segment {
         use crate::record::PuroRecord;
         use crate::segment::SegmentError::FileError;
         use crate::segment::producer::ProducerError::{IllegalSegments, Io, NotImplemented};
-        use crate::segment::{maybe_segment_order, open_segment, ACTIVE_SEGMENT_KEY};
+        use crate::segment::{
+            ACTIVE_SEGMENT_KEY, maybe_segment_order_from_dir, maybe_segment_order_from_path,
+            open_segment,
+        };
         use file_guard::{FileGuard, Lock};
         use std::fs::{DirEntry, File};
         use std::io::Read;
         use std::path::Path;
         use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::Ordering::Relaxed;
         use std::{fs, io};
+
+        const MAXIMUM_READ_BUFFER_SIZE: u16 = 16384;
 
         struct Producer<'a> {
             stream_directory: &'a Path,
             maximum_write_batch_size: u16, //In records, not bytes
             current_segment_order: AtomicU32,
             offset: AtomicU32,
-            read_buffer: Vec<u8>,
+            read_buffer_size: u16,
+            read_buffer: [u8; MAXIMUM_READ_BUFFER_SIZE as usize],
             state: ProducerSegmentState,
         }
 
@@ -165,15 +176,20 @@ mod segment {
         fn new(
             stream_directory: &Path,
             maybe_maximum_write_batch_size: Option<u16>,
-            read_buffer: Vec<u8>,
-        ) -> Producer {
-            Producer {
-                stream_directory,
-                maximum_write_batch_size: maybe_maximum_write_batch_size.unwrap_or(8192),
-                current_segment_order: AtomicU32::new(0),
-                offset: AtomicU32::new(0),
-                read_buffer,
-                state: ProducerSegmentState::Init,
+            read_buffer_size: u16,
+        ) -> Result<Producer, ()> {
+            if read_buffer_size >= MAXIMUM_READ_BUFFER_SIZE {
+                Ok(Producer {
+                    stream_directory,
+                    maximum_write_batch_size: maybe_maximum_write_batch_size.unwrap_or(8192),
+                    current_segment_order: AtomicU32::new(0),
+                    offset: AtomicU32::new(0),
+                    read_buffer_size,
+                    read_buffer: [0; MAXIMUM_READ_BUFFER_SIZE],
+                    state: ProducerSegmentState::Init,
+                })
+            } else {
+                Err(())
             }
         }
 
@@ -198,10 +214,7 @@ mod segment {
                 Ok(())
             }
 
-            fn send_verified<F>(
-                self,
-                puro_records: Vec<PuroRecord>,
-            ) -> Result<(), ProducerError>
+            fn send_verified<F>(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError>
             where
                 F: Fn(Vec<PuroRecord>) -> Result<(), ProducerError>,
             {
@@ -210,34 +223,34 @@ mod segment {
                 //  locks are acquired on the segment implied by `current_segment_order` and those
                 //  locks indicate it _is_ the active segment, we are _probably_ good to go.
 
-                // For all I know `Path` can access the name but whatever
-                let order_dir_entry_pairs: Result<Vec<(u32, DirEntry)>, io::Error> =
+                // Order passed down the chain
+                let order_dir_entry_pairs: Result<Vec<_>, io::Error> =
                     fs::read_dir(self.stream_directory).map(|res| {
                         res.filter_map(|entry| {
-                            entry.ok().and_then(|dir_entry| {
-                                maybe_segment_order(&dir_entry).map(|order| (order, dir_entry))
-                            })
+                            entry
+                                .ok()
+                                .and_then(|dir_entry| maybe_segment_order_from_dir(&dir_entry))
                         })
-                            .collect()
+                        .collect()
                     });
 
-                let file_pairs: Vec<(File, DirEntry)> = order_dir_entry_pairs
+                let file_pairs: Vec<_> = order_dir_entry_pairs
                     .and_then(|ords| {
                         ords.into_iter()
-                            .map(|pair| {
-                                open_segment(self.stream_directory, pair.0)
-                                    .map(|file| (file, pair.1))
+                            .map(|order| {
+                                open_segment(self.stream_directory, order)
+                                    .map(|segment_file| (segment_file, order))
                             })
-                            .collect::<io::Result<Vec<(File, DirEntry)>>>()
+                            .collect::<io::Result<Vec<_>>>()
                     })
                     .map_err(|_| Io)?;
 
-                let maybe_lock_pairs: Vec<Option<(FileGuard<&File>, &DirEntry)>> = file_pairs
-                    .iter()
+                let maybe_lock_pairs: Vec<Option<_>> = file_pairs
+                    .into_iter()
                     .map(|pair| {
-                        file_guard::lock(&pair.0, Lock::Exclusive, 0, 4)
+                        file_guard::lock(&(pair.0), Lock::Exclusive, 0, 4)
                             .ok()
-                            .map(|guard| (guard, &pair.1))
+                            .map(|guard| (guard, pair.1))
                     })
                     .collect::<Vec<_>>();
 
@@ -246,32 +259,47 @@ mod segment {
                     return Err(Io);
                 }
 
-                let first_bytes = maybe_lock_pairs
+                let first_byte_pairs = maybe_lock_pairs
                     .iter()
                     .flat_map(Option::iter)
                     .map(|pair| {
                         let mut file_ref: &File = *((*pair).0);
                         let mut buf = [0u8; 1];
                         let _ = file_ref.read_exact(&mut buf);
-                        (buf, pair.1)
+                        // TODO make _very_ sure the
+                        (buf, *pair.0, pair.1)
                     })
                     .collect::<Vec<_>>();
 
-                let active_segment_first_bytes = first_bytes.into_iter().filter(|pair| {
-                    let first_byte = (*pair).0[0];
-                    first_byte == ACTIVE_SEGMENT_KEY
-                }).collect::<Vec<_>>();
+                let active_segment_first_byte_pairs = first_byte_pairs
+                    .into_iter()
+                    .filter(|pair| {
+                        let first_byte = (*pair).0[0];
+                        first_byte == ACTIVE_SEGMENT_KEY
+                    })
+                    .collect::<Vec<_>>();
 
-                match active_segment_first_bytes.len() {
-                    0 => Err(NotImplemented), // TODO segment creation: will need to acquire lock
-                    1 =>  Ok(()),
-                    _ => Err(IllegalSegments)
+                match active_segment_first_byte_pairs[..] {
+                    [] => Err(NotImplemented), // TODO segment creation: will need to acquire lock, could race here
+                    [triplet] => {
+                        let (_, segment_file, order) = triplet;
+                        self.current_segment_order.store(order, Relaxed);
+
+                        self.verify_segment(segment_file);
+
+                        Ok(())
+                    }
+                    _ => Err(IllegalSegments),
                 }
             }
 
+            fn write_segment(self, segment_file: &File, puro_records: Vec<PuroRecord>) {}
 
-            fn verify_segment() {
-                
+            // We don't need to specify an end, because this will continue until the end.
+            // The segment is just checking block boundaries, because ~90% of what we're concerned
+            // about are truncations
+            fn verify_segment(self, segment_file: &File) {
+                let local_offset = self.offset.load(Relaxed);
             }
         }
 
@@ -280,7 +308,7 @@ mod segment {
             IllegalRecord,
             IllegalSegments,
             Io,
-            NotImplemented
+            NotImplemented,
         }
 
         enum ProducerSegmentState {
