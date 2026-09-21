@@ -15,6 +15,18 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.09.20
+
+"Taking a reference is a fundamentally different operation from moving" - if all you need to do is to read something,
+often times all that is necessary is a reference rather than an owned value. Also, `.iter` provides references while
+`.into_iter` transfers ownership.
+
+Also, there is a real question as to if the active segment needs to be stored on the producers and the consumers if 
+it will always be inferred from the segment state. This _could_ be used to speed up calculations - but that is a 
+later consideration which I can TODO. Given that 'byzantine' (for lack of more specific term) consistency isn't my 
+target, I think it is overkill to _then_ check for other segment activity
+
+
 ## 2026.09.10
 
 The following didn't work because file guard isn't implementing a required trait
@@ -79,7 +91,7 @@ but without having some indication of the progress that has been made, there is 
 consumers having to stop the entire segment in order to check integrity. The better option is to bite the bullet and 
 include the 
 
-Block start format
+Segment start format
 - First byte: Either `bx11110000`/`0xF0` or `bxc01110000`/`0x70`, the prior if active and the former if inactive.
 - Next three bytes: First unverified offset (reading should be start of block)
 - Block start message
