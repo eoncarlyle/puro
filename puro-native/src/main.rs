@@ -185,7 +185,7 @@ mod segment {
                     current_segment_order: AtomicU32::new(0),
                     offset: AtomicU32::new(0),
                     read_buffer_size,
-                    read_buffer: [0; MAXIMUM_READ_BUFFER_SIZE],
+                    read_buffer: [0; MAXIMUM_READ_BUFFER_SIZE as usize],
                     state: ProducerSegmentState::Init,
                 })
             } else {
@@ -246,7 +246,7 @@ mod segment {
                     .map_err(|_| Io)?;
 
                 let maybe_lock_pairs: Vec<Option<_>> = file_pairs
-                    .into_iter()
+                    .iter()
                     .map(|pair| {
                         file_guard::lock(&(pair.0), Lock::Exclusive, 0, 4)
                             .ok()
@@ -263,10 +263,10 @@ mod segment {
                     .iter()
                     .flat_map(Option::iter)
                     .map(|pair| {
-                        let mut file_ref: &File = *((*pair).0);
+                        let mut file_ref: &File = &((*pair).0);
                         let mut buf = [0u8; 1];
                         let _ = file_ref.read_exact(&mut buf);
-                        // TODO make _very_ sure the
+                        // TODO make _very_ sure the guards are working here
                         (buf, *pair.0, pair.1)
                     })
                     .collect::<Vec<_>>();
