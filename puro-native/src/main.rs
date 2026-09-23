@@ -12,12 +12,25 @@ mod record {
         pub value: Vec<u8>,
     }
 
+    impl PuroRecord {
+        fn new(topic: Vec<u8>, key: Vec<u8>, value: Vec<u8>) -> Result<PuroRecord, ()> {
+            // Topic has to be specified but technically nothing else does
+            // TODO make usize safe
+            if topic.is_empty() || (topic.len() + key.len() + value.len() > MAX_SIZE as usize) {
+                Err(())
+            } else {
+                Ok(PuroRecord {topic, key, value})
+            }
+        }
+    }
+
     pub(crate) enum ControlTopic {
         SegmentTombstone, //(vec![0u8]),
         InvalidBlock,     //(vec![1u8]),
         BlockStart,       //(vec![2u8]),
         BlockEnd,         //(vec![3u8]),
     }
+
 }
 
 mod segment {
@@ -27,6 +40,7 @@ mod segment {
     use std::io::{Error, Read};
     use std::path::{Path, PathBuf};
     use std::{fs, io};
+    use std::u32::MAX;
 
     // Note: I dn';
     #[derive(Clone)]
@@ -48,6 +62,9 @@ mod segment {
 
     const ACTIVE_SEGMENT_KEY: u8 = 0xF0;
     const INACTIVE_SEGMENT_KEY: u8 = 0x70;
+
+    // TODO actually justify this
+    const MAX_SIZE: u32  = u32::MAX >> 1;
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
         match entry.path() {
@@ -159,6 +176,7 @@ mod segment {
         use std::sync::atomic::AtomicU32;
         use std::sync::atomic::Ordering::Relaxed;
         use std::{fs, io};
+        use crate::segment;
 
         const MAXIMUM_READ_BUFFER_SIZE: u16 = 16384;
 
@@ -172,26 +190,29 @@ mod segment {
             state: ProducerSegmentState,
         }
 
-        //TODO: Need to do validation on the read_buffer
-        fn new(
-            stream_directory: &Path,
-            maybe_maximum_write_batch_size: Option<u16>,
-            read_buffer_size: u16,
-        ) -> Result<Producer, ()> {
-            if read_buffer_size >= MAXIMUM_READ_BUFFER_SIZE {
-                Ok(Producer {
-                    stream_directory,
-                    maximum_write_batch_size: maybe_maximum_write_batch_size.unwrap_or(8192),
-                    current_segment_order: AtomicU32::new(0),
-                    offset: AtomicU32::new(0),
-                    read_buffer_size,
-                    read_buffer: [0; MAXIMUM_READ_BUFFER_SIZE as usize],
-                    state: ProducerSegmentState::Init,
-                })
-            } else {
-                Err(())
+        impl Producer<'_> {
+            fn new(
+                stream_directory: &Path,
+                maybe_maximum_write_batch_size: Option<u16>,
+                read_buffer_size: u16,
+            ) -> Result<Producer, ()> {
+                if read_buffer_size >= MAXIMUM_READ_BUFFER_SIZE {
+                    Ok(Producer {
+                        stream_directory,
+                        maximum_write_batch_size: maybe_maximum_write_batch_size.unwrap_or(8192),
+                        current_segment_order: AtomicU32::new(0),
+                        offset: AtomicU32::new(0),
+                        read_buffer_size,
+                        read_buffer: [0; MAXIMUM_READ_BUFFER_SIZE as usize],
+                        state: ProducerSegmentState::Init,
+                    })
+                } else {
+                    Err(())
+                }
             }
         }
+
+        //TODO: Need to do validation on the read_buffer
 
         impl Producer<'_> {
             // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
@@ -205,18 +226,20 @@ mod segment {
                 //- Toggle signal bit
                 //- Bump length
 
-                for puro_record in puro_records {
-                    if puro_record.key.is_empty() || puro_record.value.is_empty() {
-                        return Err(ProducerError::IllegalRecord);
+                let mut total = 0;
+
+                for record in &puro_records {
+                    let record_size = (record.topic.len() + record.key.len() + record.value.len()) as u32;
+                    if segment::MAX_SIZE - total < record_size as u32 { //TODO sloppy sizing
+                        return Err(ProducerError::IllegalRecordSend)
                     }
+                    total = total + record_size;
                 }
-                // TODO run `send_verified`
-                Ok(())
+
+                self.send_verified(puro_records)
             }
 
-            fn send_verified<F>(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError>
-            where
-                F: Fn(Vec<PuroRecord>) -> Result<(), ProducerError>,
+            fn send_verified(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError>
             {
                 // TODO: Use the `current_segment_order`
                 //  As written this currently assumes nothing about the segment state, but if the
@@ -305,7 +328,7 @@ mod segment {
 
         pub(crate) enum ProducerError {
             BufferOverflow,
-            IllegalRecord,
+            IllegalRecordSend,
             IllegalSegments,
             Io,
             NotImplemented,

@@ -15,6 +15,25 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.09.22
+
+From the docs:
+
+> The BufReader<R> struct adds buffering to any reader.
+> 
+> It can be excessively inefficient to work directly with a Read instance. For example, every call to read on TcpStream > results in a system call. A BufReader<R> performs large, infrequent reads on the underlying Read and maintains an > in-memory buffer of the results.
+> 
+> BufReader<R> can improve the speed of programs that make small and repeated read calls to the same file or network 
+> socket. It does not help when reading very large amounts at once, or reading just one or a few times. It also provides no advantage when reading from a source that is already in memory, like a Vec<u8>.
+
+And as the O'Reily 'Programming Rust' points out:
+
+> In Rust, `File` and `BufReader` are two separate library features, because sometimes you want files without 
+> buffering, and sometimes you want buffering without files (for example, you may want to buffer input from the network).
+
+I don't think there are big advantages to `BufReader` for Puro; `File.sync_all` is what matters but that should be 
+a seperate concern anyway.
+
 ## 2026.09.20
 
 "Taking a reference is a fundamentally different operation from moving" - if all you need to do is to read something,
