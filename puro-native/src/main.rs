@@ -1,6 +1,7 @@
 mod record {
-    // 1 byte value, 0 byte key, 1 byte topic
-    const BLOCK_START_RECORD_SIZE: u8 = 10;
+    // 1 (CRC8) + 3 (subrecord length) + 3 (topic length) + 1 (topic) + 3 (key length) + 0 (key)
+    // + 1 (signal byte) + 3 (subblock length)
+    pub const BLOCK_START_RECORD_SIZE: u32 = 15;
     const BLOCK_END_RECORD_SIZE: u8 = 9;
 
     // 10 MiB
@@ -33,26 +34,29 @@ mod record {
 }
 
 mod segment {
-    use crate::segment::SegmentError::{FileError, MangledSegment};
+    use crate::segment::SegmentErrorKind::{FileError, MangledSegment};
+    use byteorder::{ByteOrder, LittleEndian};
     use file_guard::Lock;
     use std::fs::{DirEntry, File, OpenOptions};
     use std::io::{Error, Read};
     use std::path::{Path, PathBuf};
     use std::u32::MAX;
     use std::{fs, io};
-    use byteorder::{ByteOrder, LittleEndian};
+    use crate::record::PuroRecord;
 
     // Note: I dn';
     #[derive(Clone)]
-    pub enum SegmentError {
+    pub enum SegmentErrorKind {
         BadPath,
         FileError,
         DuplicateActiveSegments,
         MangledSegment,
     }
 
-    impl From<Error> for SegmentError {
-        fn from(value: Error) -> Self {
+    //TODO: Error kinds for simple reads rather than segment handling
+
+    impl From<Error> for SegmentErrorKind {
+        fn from(_value: Error) -> Self {
             FileError
         }
     }
@@ -63,8 +67,11 @@ mod segment {
     pub(crate) const ACTIVE_SEGMENT_KEY: u8 = 0xF0;
     const INACTIVE_SEGMENT_KEY: u8 = 0x70;
 
+    // 1 (CRC8) + 3 (subrecord length) + 3 (topic len) + 1 (topic) + 3 (key length) + 0 (key)
+
+
     // TODO actually justify this
-    pub(crate) const MAX_SIZE: u32 = u32::MAX >> 1;
+    pub(crate) const U24_MAX: u32 = 2 << 23; //== 2^24
 
     fn segment_extension_match(entry: &DirEntry) -> bool {
         match entry.path() {
@@ -97,9 +104,9 @@ mod segment {
 
     // This function is only really safe to run in static contexts, because locks are not held
     // while evaluating segment status. This makes it race condition prone.
-    pub fn get_active_segment(stream_directory: &Path) -> Result<Option<u32>, SegmentError> {
+    pub fn get_active_segment(stream_directory: &Path) -> Result<Option<u32>, SegmentErrorKind> {
         if stream_directory.is_dir() {
-            let mut active: Result<Option<u32>, SegmentError> = Ok(None);
+            let mut active: Result<Option<u32>, SegmentErrorKind> = Ok(None);
             for entry in fs::read_dir(stream_directory)? {
                 // TODO not really sure if `if let` is the best way here
                 if let Ok(entry) = entry {
@@ -123,7 +130,7 @@ mod segment {
                                 let result = match (active.clone(), r_first_segment_byte) {
                                     (_, Err(_)) => Err(FileError), //TODO lame and you know it
                                     (Ok(Some(_)), Ok(ACTIVE_SEGMENT_KEY)) => {
-                                        Err(SegmentError::DuplicateActiveSegments)
+                                        Err(SegmentErrorKind::DuplicateActiveSegments)
                                     }
                                     (Ok(None), Ok(ACTIVE_SEGMENT_KEY)) => Ok(true),
                                     (_, Ok(INACTIVE_SEGMENT_KEY)) => Ok(false),
@@ -146,7 +153,7 @@ mod segment {
             active
         } else {
             // TODO get a better error type
-            Err(SegmentError::BadPath)
+            Err(SegmentErrorKind::BadPath)
         }
     }
 
@@ -161,6 +168,8 @@ mod segment {
             )))
     }
 
+    pub(crate) fn parse_block_start() -> Result<PuroRecord, ()> {}
+
     pub(crate) fn get_u24(a: u8, b: u8, c: u8) -> u32 {
         let a = a as u32;
         let b = (b as u32) << 8;
@@ -169,10 +178,15 @@ mod segment {
     }
 }
 mod producer {
-    use crate::record::PuroRecord;
+    use crate::producer::ProducerErrorKind::{IllegalSegments, Io, MangedSegmentOffset, NotImplemented, U24ChangeMeLater};
+    use crate::record::{PuroRecord, BLOCK_START_RECORD_SIZE};
     use crate::segment;
-    use crate::segment::SegmentError::FileError;
-    use crate::segment::{ACTIVE_SEGMENT_KEY, maybe_segment_order_from_dir, maybe_segment_order_from_path, open_segment, get_u24};
+    use crate::segment::SegmentErrorKind::FileError;
+    use crate::segment::{
+        ACTIVE_SEGMENT_KEY, U24_MAX, get_u24, maybe_segment_order_from_dir,
+        maybe_segment_order_from_path, open_segment,
+    };
+    use byteorder::{ByteOrder, LittleEndian};
     use file_guard::Lock;
     use std::fs::File;
     use std::io::Read;
@@ -180,8 +194,6 @@ mod producer {
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering::Relaxed;
     use std::{fs, io};
-    use byteorder::{ByteOrder, LittleEndian};
-    use crate::producer::ProducerError::{IllegalSegments, Io, NotImplemented};
 
     const MAXIMUM_READ_BUFFER_SIZE: u16 = 16384;
 
@@ -221,7 +233,7 @@ mod producer {
 
     impl Producer<'_> {
         // Why the dyn for iterator? Virtual method call? Unbounded iterator size?
-        fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
+        fn send(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerErrorKind> {
             //- Determine if request is legal
             //- Acquire file lock
             //- Check integrity of segment between offset and end-of-file if init, otherwise just
@@ -236,9 +248,9 @@ mod producer {
             for record in &puro_records {
                 let record_size =
                     (record.topic.len() + record.key.len() + record.value.len()) as u32;
-                if segment::MAX_SIZE - total < record_size as u32 {
+                if segment::U24_MAX - total < record_size as u32 {
                     //TODO sloppy sizing
-                    return Err(ProducerError::IllegalRecordSend);
+                    return Err(ProducerErrorKind::IllegalRecordSend);
                 }
                 total = total + record_size;
             }
@@ -246,7 +258,7 @@ mod producer {
             self.send_verified(puro_records)
         }
 
-        fn send_verified(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerError> {
+        fn send_verified(self, puro_records: Vec<PuroRecord>) -> Result<(), ProducerErrorKind> {
             // TODO: Use the `current_segment_order`
             //  As written this currently assumes nothing about the segment state, but if the
             //  locks are acquired on the segment implied by `current_segment_order` and those
@@ -260,7 +272,7 @@ mod producer {
                             .ok()
                             .and_then(|dir_entry| maybe_segment_order_from_dir(&dir_entry))
                     })
-                    .collect()
+                        .collect()
                 });
 
             let file_pairs: Vec<_> = order_dir_entry_pairs
@@ -309,7 +321,7 @@ mod producer {
                 .collect::<Vec<_>>();
 
             if active_segment_first_four_byte_pairs.len() > 1 {
-                return Err(NotImplemented)
+                return Err(NotImplemented);
             }
 
             match active_segment_first_four_byte_pairs.get(0) {
@@ -318,11 +330,16 @@ mod producer {
                     self.current_segment_order.store(order, Relaxed);
 
                     // Only based off of the first four bits
-                    let segment_recorded_offset = get_u24(first_four_bytes[1], first_four_bytes[2], first_four_bytes[3]);
-                    let first_unconfirmed_segment = self.verify_segment(segment_file);
+                    let segment_recorded_offset = get_u24(
+                        first_four_bytes[1],
+                        first_four_bytes[2],
+                        first_four_bytes[3],
+                    );
+                    let first_unconfirmed_segment =
+                        self.verify_existing_segment(segment_file, segment_recorded_offset);
 
                     Ok(())
-                },
+                }
                 None => {
                     Err(NotImplemented) // TODO segment creation: will need to acquire lock, could race here
                 }
@@ -334,24 +351,41 @@ mod producer {
         // We don't need to specify an end, because this will continue until the end.
         // The segment is just checking block boundaries, because ~90% of what we're concerned
         // about are truncations
-        fn verify_segment(self, segment_file: &File) {
+        fn verify_existing_segment(
+            self,
+            segment_file: &File,
+            segment_recorded_offset: u32,
+        ) -> Result<(), ProducerErrorKind> {
             // We are making the assumption that the local offset is always the start of a block...
             // ...or the start of the segment entirely if it is zero
             // Originally I used the `self.offset` but I don't think the producer's offset is
             // actually relevant? The point of this is that another producer has vouched for the
             // offset that is provided on the segment
-
-            // CRC8 + subrecord + topic length +
-            let mut buf = 16;
+            match segment_file.metadata().map(|a| a.len()) {
+                Some(size) if size > U24_MAX => Err(U24ChangeMeLater),
+                // TODO harden predicate, see 2026.10.01 note
+                Some(size) if size <= U24_MAX && size >= BLOCK_START_RECORD_SIZE && size && segment_recorded_offset + BLOCK_START_RECORD_SIZE < size => {
+                    Err(Io)
+                },
+                Some(size) if size > segment_recorded_offset => {
+                    // TODO cleanup possible, but requires full-segment cleanup...
+                    // TODO ...not a very big priority, see 2026.10.01 note
+                    Err(MangedSegmentOffset)
+                },
+                Some(size) if segment_recorded_offset + BLOCK_START_RECORD_SIZE < size  => Err(MangedSegmentOffset),
+                _ => Err(Io)
+            }
         }
     }
 
-    pub(crate) enum ProducerError {
+    pub(crate) enum ProducerErrorKind {
         BufferOverflow,
         IllegalRecordSend,
         IllegalSegments,
         Io,
         NotImplemented,
+        U24ChangeMeLater,
+        MangedSegmentOffset
     }
 
     enum ProducerSegmentState {

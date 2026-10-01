@@ -15,6 +15,28 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.10.01
+
+I may regret not writing more things as u24s. But that can be handled later. 
+
+In writing `verify_existing_segment` I am confronted with an issue that we didn't face in the original Puro, namely 
+'what happens if the offset listed in the header is illegal? Well behaved producers will never put it into this 
+position. It is fine for a well-behaved consumer to be killed right before incrementing the segment header offset, 
+but getting that _wrong_ would be a real pain because a newly incoming producer wouldn't know where to begin.
+
+This _is_ recoverable, but in the worst-case scenario it would require a full segment iteration. That isn't 
+something that I need to tackle right now.
+
+Also, as currently written, the predicate is pretty weak:
+
+```
+size <= U24_MAX && size >= BLOCK_START_RECORD_SIZE && size && segment_recorded_offset + BLOCK_START_RECORD_SIZE < size
+```
+
+Realistically we need a block end record too, but I don't feel the need to do this on the first pass.
+
+``````
+
 ## 2026.09.22
 
 From the docs:
