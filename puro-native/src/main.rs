@@ -168,7 +168,6 @@ mod segment {
             )))
     }
 
-    pub(crate) fn parse_block_start() -> Result<PuroRecord, ()> {}
 
     pub(crate) fn get_u24(a: u8, b: u8, c: u8) -> u32 {
         let a = a as u32;
@@ -362,17 +361,22 @@ mod producer {
             // actually relevant? The point of this is that another producer has vouched for the
             // offset that is provided on the segment
             match segment_file.metadata().map(|a| a.len()) {
-                Some(size) if size > U24_MAX => Err(U24ChangeMeLater),
+                Ok(size) if size > U24_MAX as u64 => Err(U24ChangeMeLater),
                 // TODO harden predicate, see 2026.10.01 note
-                Some(size) if size <= U24_MAX && size >= BLOCK_START_RECORD_SIZE && size && segment_recorded_offset + BLOCK_START_RECORD_SIZE < size => {
-                    Err(Io)
-                },
-                Some(size) if size > segment_recorded_offset => {
+                // The cast below is only safe because of the starting U24 max comparison
+                Ok(size) if size <= U24_MAX as u64 && size >= BLOCK_START_RECORD_SIZE as u64 && segment_recorded_offset + BLOCK_START_RECORD_SIZE < size as u32  => {
+
+                    // Find block size
+                    let mut buf = [0u8; BLOCK_START_RECORD_SIZE as usize];
+                    let a = segment_file.read_exact(&mut buf).map_err(|_| Err::<(), ProducerErrorKind>(Io));
+                    Err(NotImplemented)
+                }
+                Ok(size) if size < segment_recorded_offset as u64 => {
                     // TODO cleanup possible, but requires full-segment cleanup...
                     // TODO ...not a very big priority, see 2026.10.01 note
                     Err(MangedSegmentOffset)
                 },
-                Some(size) if segment_recorded_offset + BLOCK_START_RECORD_SIZE < size  => Err(MangedSegmentOffset),
+                Ok(size) if segment_recorded_offset + BLOCK_START_RECORD_SIZE < size as u32 => Err(MangedSegmentOffset),
                 _ => Err(Io)
             }
         }
