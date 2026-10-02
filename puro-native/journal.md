@@ -35,7 +35,7 @@ size <= U24_MAX && size >= BLOCK_START_RECORD_SIZE && size && segment_recorded_o
 
 Realistically we need a block end record too, but I don't feel the need to do this on the first pass.
 
-``````
+Note my commit message on `07752aa`
 
 ## 2026.09.22
 
