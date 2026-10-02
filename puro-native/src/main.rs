@@ -334,8 +334,9 @@ mod producer {
                         first_four_bytes[2],
                         first_four_bytes[3],
                     );
+                    let mut a = segment_file;
                     let first_unconfirmed_segment =
-                        self.verify_existing_segment(segment_file, segment_recorded_offset);
+                        self.verify_existing_segment(a, segment_recorded_offset);
 
                     Ok(())
                 }
@@ -352,7 +353,7 @@ mod producer {
         // about are truncations
         fn verify_existing_segment(
             self,
-            segment_file: &File,
+            mut segment_file: &File,
             segment_recorded_offset: u32,
         ) -> Result<(), ProducerErrorKind> {
             // We are making the assumption that the local offset is always the start of a block...
