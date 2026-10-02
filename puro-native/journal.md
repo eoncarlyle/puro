@@ -37,7 +37,9 @@ Realistically we need a block end record too, but I don't feel the need to do th
 
 Note my commit message on `07752aa`
 
-Making the decision that the 
+Making the decision that the signal bit is low order bit of the signal byte
+
+Pickup point after `30d5348`: around `maybe_parse_subblock_length_from_start` in `verify_existing_segment`
 
 ## 2026.09.22
 
