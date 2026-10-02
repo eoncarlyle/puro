@@ -1,3 +1,6 @@
+mod crc8;
+mod puro;
+
 mod record {
     // 1 (CRC8) + 3 (subrecord length) + 3 (topic length) + 1 (topic) + 3 (key length) + 0 (key)
     // + 1 (signal byte) + 3 (subblock length)
@@ -25,15 +28,20 @@ mod record {
         }
     }
 
+    #[repr(u8)]
     pub(crate) enum ControlTopic {
-        SegmentTombstone, //(vec![0u8]),
-        InvalidBlock,     //(vec![1u8]),
-        BlockStart,       //(vec![2u8]),
-        BlockEnd,         //(vec![3u8]),
+        SegmentTombstone = 0, //(vec![0u8]),
+        InvalidBlock = 1,     //(vec![1u8]),
+        BlockStart = 2,       //(vec![2u8]),
+        BlockEnd = 3,         //(vec![3u8]),
     }
 }
 
 mod segment {
+    use crate::crc8::Crc8;
+    use crate::producer::ProducerErrorKind;
+    use crate::producer::ProducerErrorKind::Io;
+    use crate::record::{BLOCK_START_RECORD_SIZE, ControlTopic, PuroRecord};
     use crate::segment::SegmentErrorKind::{FileError, MangledSegment};
     use byteorder::{ByteOrder, LittleEndian};
     use file_guard::Lock;
@@ -42,7 +50,8 @@ mod segment {
     use std::path::{Path, PathBuf};
     use std::u32::MAX;
     use std::{fs, io};
-    use crate::record::PuroRecord;
+    use crate::segment::ReadErrorKind::Mangled;
+    use std::os::unix::fs::FileExt;
 
     // Note: I dn';
     #[derive(Clone)]
@@ -53,7 +62,13 @@ mod segment {
         MangledSegment,
     }
 
-    //TODO: Error kinds for simple reads rather than segment handling
+    //These errors are for general reads rather than segment handling
+    pub enum ReadErrorKind {
+        Checksum,
+        Mangled,
+        Io,
+        LowSignalBit,
+    }
 
     impl From<Error> for SegmentErrorKind {
         fn from(_value: Error) -> Self {
@@ -68,7 +83,6 @@ mod segment {
     const INACTIVE_SEGMENT_KEY: u8 = 0x70;
 
     // 1 (CRC8) + 3 (subrecord length) + 3 (topic len) + 1 (topic) + 3 (key length) + 0 (key)
-
 
     // TODO actually justify this
     pub(crate) const U24_MAX: u32 = 2 << 23; //== 2^24
@@ -104,6 +118,7 @@ mod segment {
 
     // This function is only really safe to run in static contexts, because locks are not held
     // while evaluating segment status. This makes it race condition prone.
+    #[deprecated]
     pub fn get_active_segment(stream_directory: &Path) -> Result<Option<u32>, SegmentErrorKind> {
         if stream_directory.is_dir() {
             let mut active: Result<Option<u32>, SegmentErrorKind> = Ok(None);
@@ -168,23 +183,61 @@ mod segment {
             )))
     }
 
-
-    pub(crate) fn get_u24(a: u8, b: u8, c: u8) -> u32 {
+    pub(crate) fn get_u24_triple(a: u8, b: u8, c: u8) -> u32 {
         let a = a as u32;
         let b = (b as u32) << 8;
         let c = (c as u32) << 16;
         a + b + c
     }
+
+    pub(crate) fn get_u24_arr(buf: [u8; 3]) -> u32 {
+        let a = buf[0] as u32;
+        let b = (buf[1] as u32) << 8;
+        let c = (buf[2] as u32) << 16;
+        a + b + c
+    }
+
+    pub(crate) fn maybe_parse_subblock_length_from_start(
+        mut segment_file: &File,
+        offset: u32,
+    ) -> Result<u32, ReadErrorKind> {
+        let mut buf = [0u8; BLOCK_START_RECORD_SIZE as usize];
+        if let Err(_) = segment_file.read_exact_at(&mut buf, offset as u64) {
+            return Err(ReadErrorKind::Io);
+        }
+        // This is a special read because normally we get the lengths in order to know how far to
+        // read, but here the lengths are in order to check
+        let expected_crc8 = buf[0];
+        let subrecord_length = get_u24_triple(buf[1], buf[2], buf[3]);
+        let topic_length = get_u24_triple(buf[4], buf[5], buf[6]);
+        let topic = buf[7];
+
+        let key_length = get_u24_triple(buf[8], buf[9], buf[10]);
+        let signal_byte = buf[11];
+        let subblock_length = get_u24_triple(buf[12], buf[13], buf[14]);
+
+        let actual_crc8 = Crc8::create_lsb(130).calc(&buf[1..], (BLOCK_START_RECORD_SIZE - 1), 0);
+
+        if actual_crc8 != expected_crc8 {
+            Err(ReadErrorKind::Checksum)
+        } else if signal_byte | 0xFE != 0xFF {
+            Err(ReadErrorKind::LowSignalBit)
+        } else if topic != ControlTopic::BlockStart as u8 {
+            Err(Mangled)
+        } else if (subrecord_length != BLOCK_START_RECORD_SIZE - 1 || topic_length != 1 || key_length != 0) {
+            Err(Mangled)
+        } else {
+            Ok(subblock_length)
+        }
+    }
 }
 mod producer {
-    use crate::producer::ProducerErrorKind::{IllegalSegments, Io, MangedSegmentOffset, NotImplemented, U24ChangeMeLater};
-    use crate::record::{PuroRecord, BLOCK_START_RECORD_SIZE};
-    use crate::segment;
-    use crate::segment::SegmentErrorKind::FileError;
-    use crate::segment::{
-        ACTIVE_SEGMENT_KEY, U24_MAX, get_u24, maybe_segment_order_from_dir,
-        maybe_segment_order_from_path, open_segment,
+    use crate::producer::ProducerErrorKind::{
+        IllegalSegments, Io, MangedSegmentOffset, NotImplemented, U24ChangeMeLater,
     };
+    use crate::record::{BLOCK_START_RECORD_SIZE, PuroRecord};
+    use crate::segment;
+    use crate::segment::{ACTIVE_SEGMENT_KEY, U24_MAX, get_u24_arr, get_u24_triple, maybe_segment_order_from_dir, maybe_segment_order_from_path, open_segment, maybe_parse_subblock_length_from_start};
     use byteorder::{ByteOrder, LittleEndian};
     use file_guard::Lock;
     use std::fs::File;
@@ -271,7 +324,7 @@ mod producer {
                             .ok()
                             .and_then(|dir_entry| maybe_segment_order_from_dir(&dir_entry))
                     })
-                        .collect()
+                    .collect()
                 });
 
             let file_pairs: Vec<_> = order_dir_entry_pairs
@@ -328,15 +381,11 @@ mod producer {
                     let (first_four_bytes, segment_file, order) = *triplet;
                     self.current_segment_order.store(order, Relaxed);
 
-                    // Only based off of the first four bits
-                    let segment_recorded_offset = get_u24(
-                        first_four_bytes[1],
-                        first_four_bytes[2],
-                        first_four_bytes[3],
-                    );
-                    let mut a = segment_file;
+                    let [_, a, b, c] = first_four_bytes;
+                    let segment_recorded_offset = get_u24_arr([a, b, c]);
+
                     let first_unconfirmed_segment =
-                        self.verify_existing_segment(a, segment_recorded_offset);
+                        self.verify_existing_segment(segment_file, segment_recorded_offset);
 
                     Ok(())
                 }
@@ -365,20 +414,26 @@ mod producer {
                 Ok(size) if size > U24_MAX as u64 => Err(U24ChangeMeLater),
                 // TODO harden predicate, see 2026.10.01 note
                 // The cast below is only safe because of the starting U24 max comparison
-                Ok(size) if size <= U24_MAX as u64 && size >= BLOCK_START_RECORD_SIZE as u64 && segment_recorded_offset + BLOCK_START_RECORD_SIZE < size as u32  => {
+                Ok(size)
+                    if size <= U24_MAX as u64
+                        && size >= BLOCK_START_RECORD_SIZE as u64
+                        && segment_recorded_offset + BLOCK_START_RECORD_SIZE < size as u32 =>
+                {
+                    // Iterate through signal blocks to check integrity
+                    //TODO Rather than just do this once, increment the recorded offset _and also_ check for block ends
+                    let r = maybe_parse_subblock_length_from_start(segment_file, segment_recorded_offset);
 
-                    // Find block size
-                    let mut buf = [0u8; BLOCK_START_RECORD_SIZE as usize];
-                    let a = segment_file.read_exact(&mut buf).map_err(|_| Err::<(), ProducerErrorKind>(Io));
-                    Err(NotImplemented)
+                    Err(Io)
                 }
                 Ok(size) if size < segment_recorded_offset as u64 => {
                     // TODO cleanup possible, but requires full-segment cleanup...
                     // TODO ...not a very big priority, see 2026.10.01 note
                     Err(MangedSegmentOffset)
-                },
-                Ok(size) if segment_recorded_offset + BLOCK_START_RECORD_SIZE < size as u32 => Err(MangedSegmentOffset),
-                _ => Err(Io)
+                }
+                Ok(size) if segment_recorded_offset + BLOCK_START_RECORD_SIZE < size as u32 => {
+                    Err(MangedSegmentOffset)
+                }
+                _ => Err(Io),
             }
         }
     }
@@ -390,7 +445,7 @@ mod producer {
         Io,
         NotImplemented,
         U24ChangeMeLater,
-        MangedSegmentOffset
+        MangedSegmentOffset,
     }
 
     enum ProducerSegmentState {

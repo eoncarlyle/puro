@@ -37,6 +37,8 @@ Realistically we need a block end record too, but I don't feel the need to do th
 
 Note my commit message on `07752aa`
 
+Making the decision that the 
+
 ## 2026.09.22
 
 From the docs:
