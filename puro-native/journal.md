@@ -15,6 +15,25 @@ key: byte[]
 value: byte[]
 ```
 
+## 2026.10.11
+
+~~I went back into the old Puro code and I don't think the block end messages are at all special.~~
+End block record did have the subrecord size - but I'm not positive that it is necessary.
+
+```kotlin
+        val endBlockValue = ByteBuffer.allocate(4)
+        endBlockValue.putInt(subBlockLength)
+
+        val endBlockRecordSize = buildProtoRecordAtIndex(
+            puroRecords.size + 1,
+            PuroRecord(ControlTopic.BLOCK_END.value, ByteBuffer.wrap(byteArrayOf()), endBlockValue),
+            protoRecords
+        )
+```
+
+Current work is in `Producer.send_verified`. Need to create Puro serialisation methods. Lots of places where 
+recovery needs to be worked on.
+
 ## 2026.10.01
 
 I may regret not writing more things as u24s. But that can be handled later. 
