@@ -2,8 +2,6 @@
 
 ## Reference
 
-Canonical 
-
 Variable integer messages
 ```text
 crc: uint8
@@ -14,6 +12,15 @@ keyLength: varint
 key: byte[]
 value: byte[]
 ```
+
+## 2026.10.25
+Do I dread coming back to this? Maybe! For all of my distaste of exceptions I don't think I have the best handle
+on non-unweidly error patterns. Frankly what is left to do in `Producer#send_verified` isn't too bad. I do need
+something working even if it is just the most basic of producers (consumer would also be good, frankly, but I
+don't know how annoying the file notifications will be); once something is working I can get more actionable
+feedback on how to not make this crazy annoying.
+
+Perhaps the answer rhymes with 'should have been doing more unit tests'
 
 ## 2026.10.11
 
