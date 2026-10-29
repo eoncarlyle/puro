@@ -48,7 +48,7 @@ impl Crc8 {
             i >>= 1;
         }
 
-        return Crc8{ table };
+        Crc8{ table }
     }
 
     pub fn calc(&mut self, buffer : &[u8], length: u32, crc: u8) -> u8 {
@@ -59,6 +59,6 @@ impl Crc8 {
             crc_tmp = self.table[((crc_tmp ^ buffer[i as usize]) as u8) as usize];
             i+=1;
         }
-        return crc_tmp;
+        crc_tmp
     }
 }
