@@ -1,13 +1,13 @@
 mod producer {
-    use crate::producer::ProducerErrorKind::{
+    use crate::producer::producer::ProducerErrorKind::{
         Io, MangedSegmentOffset, NotImplemented, U24ChangeMeLater,
     };
-    use crate::record::{PuroRecord, BLOCK_END_RECORD_SIZE, BLOCK_START_RECORD_SIZE};
+    use crate::record::{BLOCK_END_RECORD_SIZE, BLOCK_START_RECORD_SIZE, PuroRecord};
     use crate::segment;
     use crate::segment::{
-        get_u24_arr, maybe_parse_subblock_length_from_boundary_record, maybe_segment_order_from_dir, open_segment, BlockBoundaryRecordType
-        , ReadErrorKind,
-        ACTIVE_SEGMENT_KEY, U24_MAX,
+        ACTIVE_SEGMENT_KEY, BlockBoundaryRecordType, ReadErrorKind, U24_MAX, get_u24_arr,
+        maybe_parse_subblock_length_from_boundary_record, maybe_segment_order_from_dir,
+        open_segment,
     };
     use file_guard::Lock;
     use std::fs::File;
@@ -70,7 +70,7 @@ mod producer {
             for record in &puro_records {
                 let record_size =
                     (record.topic.len() + record.key.len() + record.value.len()) as u32;
-                if segment::U24_MAX - total < record_size as u32 {
+                if U24_MAX - total < record_size {
                     //TODO sloppy sizing
                     return Err(ProducerErrorKind::IllegalRecordSend);
                 }
@@ -230,7 +230,7 @@ mod producer {
                                     );
 
                                 match maybe_end_subblock_length {
-                                    Some(end_subblock_length)
+                                    Ok(end_subblock_length)
                                         if start_subblock_length == end_subblock_length =>
                                     {
                                         Ok(start_subblock_length)

@@ -33,6 +33,9 @@ I should have made this a long, long time ago, but here is a record diagram:
   - Key: empty
   - Value: Int24 length of subblock
 
+After splitting things into modules I now need to handle `maybe_parse_subblock_length_from_boundary_record`; given that
+the only thing that is different is the value that isn't too bad to handle
+
 ## 2026.10.25
 
 Do I dread coming back to this? Maybe! For all of my distaste of exceptions I don't think I have the best handle
